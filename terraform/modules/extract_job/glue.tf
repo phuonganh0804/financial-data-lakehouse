@@ -54,10 +54,10 @@ resource "aws_s3_object" "extract_scripts" {
 resource "aws_s3_object" "dependencies" {
   for_each = fileset("${path.module}/../../assets/dependencies", "*.whl")
 
-  bucket = var.scripts_bucket_name
-  key    = "assets/dependencies/${each.value}"
-  source = "${path.module}/../../assets/dependencies/${each.value}"
-  etag   = filemd5("${path.module}/../../assets/dependencies/${each.value}")
+  bucket      = var.scripts_bucket_name
+  key         = "assets/dependencies/${each.value}"
+  source      = "${path.module}/../../assets/dependencies/${each.value}"
+  source_hash = filemd5("${path.module}/../../assets/dependencies/${each.value}")
 
   tags = {
     Project     = var.project_name

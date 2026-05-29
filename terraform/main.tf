@@ -2,15 +2,15 @@ locals {
   extract_jobs = {
     "binance" = {
       script  = "binance_historical.py"
-      timeout = 10
+      timeout = 5
     }
     "yfinance" = {
       script  = "yfinance_dax.py"
-      timeout = 10
+      timeout = 5
     }
     "fred" = {
       script  = "fred_macro.py"
-      timeout = 10
+      timeout = 5
     }
   }
 }
