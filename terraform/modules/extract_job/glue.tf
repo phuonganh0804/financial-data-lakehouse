@@ -28,3 +28,18 @@ resource "aws_glue_job" "extract_jobs" {
     Job         = each.key
   }
 }
+
+# Upload extract scripts to S3
+resource "aws_s3_object" "extract_scripts" {
+  for_each = var.extract_jobs
+
+  bucket = var.scripts_bucket_name
+  key    = "assets/extract_jobs/${each.value.script}"
+  source = "${path.module}/../../assets/extract_jobs/${each.value.script}"
+  etag   = filemd5("${path.module}/../../assets/extract_jobs/${each.value.script}")
+
+  tags = {
+    Project     = var.project_name
+    Environment = var.environment
+  }
+}
