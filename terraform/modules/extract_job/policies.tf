@@ -13,8 +13,6 @@ data "aws_iam_policy_document" "glue_base_policy" {
 }
 
 data "aws_iam_policy_document" "glue_access_policy" {
-
-  # Scripts bucket - read only
   statement {
     sid    = "ReadScriptsBucket"
     effect = "Allow"
@@ -28,7 +26,6 @@ data "aws_iam_policy_document" "glue_access_policy" {
     ]
   }
 
-  # Bronze bucket - write only
   statement {
     sid    = "WriteBronzeBucket"
     effect = "Allow"
@@ -42,7 +39,6 @@ data "aws_iam_policy_document" "glue_access_policy" {
     ]
   }
 
-  # Glue catalog - needed for Iceberg
   statement {
     sid    = "GlueCatalogAccess"
     effect = "Allow"
@@ -57,7 +53,6 @@ data "aws_iam_policy_document" "glue_access_policy" {
     resources = ["*"]
   }
 
-  # CloudWatch - logging only
   statement {
     sid    = "CloudWatchLogging"
     effect = "Allow"
@@ -70,5 +65,28 @@ data "aws_iam_policy_document" "glue_access_policy" {
       "arn:aws:logs:*:${data.aws_caller_identity.current.account_id}:*"
     ]
   }
+
+  statement {
+    sid    = "ReadSSMParameters"
+    effect = "Allow"
+    actions = [
+      "ssm:GetParameter",
+      "ssm:GetParameters"
+    ]
+    resources = [
+      "arn:aws:ssm:*:${data.aws_caller_identity.current.account_id}:parameter/dax-crypto-pipeline/*"
+    ]
+  }
+
+  statement {
+    sid    = "DecryptKMS"
+    effect = "Allow"
+    actions = [
+      "kms:Decrypt"
+    ]
+    resources = ["*"]
+  }
 }
+
+
 

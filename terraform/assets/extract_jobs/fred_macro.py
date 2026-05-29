@@ -1,4 +1,5 @@
 import sys
+import boto3
 import pandas as pd
 from fredapi import Fred
 from datetime import datetime, timezone
@@ -11,8 +12,7 @@ from pyspark.context import SparkContext
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME',
     'bronze_bucket',
-    'ingest_date',
-    'fred_api_key'
+    'ingest_date'
 ])
 
 sc = SparkContext()
@@ -22,9 +22,9 @@ job = Job(glueContext)
 job.init(args['JOB_NAME'], args)
 
 # ── Config ────────────────────────────────────────
-BRONZE_BUCKET = args['bronze_bucket']
-INGEST_DATE   = args['ingest_date']
-FRED_API_KEY  = args['fred_api_key']
+BRONZE_BUCKET   = args['bronze_bucket']
+INGEST_DATE     = args['ingest_date']
+SSM_PARAMETER   = '/dax-crypto-pipeline/fred-api-key'
 
 MACRO_SERIES = {
     'ECBDFR':             'ECB Deposit Rate',
@@ -32,6 +32,15 @@ MACRO_SERIES = {
     'CLVMEURSCAB1GQEA19': 'Euro Area GDP Growth',
     'T10YIE':             'US 10Y Inflation Expectations',
 }
+
+# ── Get API key from SSM ──────────────────────────
+def get_fred_api_key(parameter_name: str) -> str:
+    ssm = boto3.client('ssm', region_name='eu-central-1')
+    response = ssm.get_parameter(
+        Name=parameter_name,
+        WithDecryption=True
+    )
+    return response['Parameter']['Value']
 
 # ── Fetch from FRED ───────────────────────────────
 def fetch_macro(api_key: str) -> pd.DataFrame:
@@ -45,7 +54,7 @@ def fetch_macro(api_key: str) -> pd.DataFrame:
                 observation_start='2023-01-01'
             )
             df = data.reset_index()
-            df.columns     = ['date', 'value']
+            df.columns       = ['date', 'value']
             df['series_id']   = series_id
             df['series_name'] = name
             df = df.dropna()
@@ -92,10 +101,13 @@ def write_to_bronze(df: pd.DataFrame) -> None:
 def main() -> None:
     print(f"Starting FRED macro extract job")
     print(f"Ingest date: {INGEST_DATE}")
-    print(f"Series: {list(MACRO_SERIES.keys())}")
+
+    # Get API key securely from SSM
+    fred_api_key = get_fred_api_key(SSM_PARAMETER)
+    print("✅ API key retrieved from SSM")
 
     # Fetch
-    df = fetch_macro(FRED_API_KEY)
+    df = fetch_macro(fred_api_key)
     print(f"Fetched {len(df)} total rows")
 
     # Validate
