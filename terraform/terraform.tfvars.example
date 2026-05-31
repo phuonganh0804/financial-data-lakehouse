@@ -1,0 +1,4 @@
+ingest_date    = "YYYY-MM-DD"
+api_start_date = "YYYY-MM-DD"
+api_end_date   = "YYYY-MM-DD"
+interval       = "1d"
