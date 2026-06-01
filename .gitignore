@@ -31,3 +31,4 @@ terraform/assets/dependencies/
 # OS
 .DS_Store
 Thumbs.db
+terraform/backend.hcl

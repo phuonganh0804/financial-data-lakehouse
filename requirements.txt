@@ -1,0 +1,10 @@
+yfinance
+pandas
+requests
+fredapi
+boto3
+python-dotenv
+ipykernel
+jupyter
+matplotlib
+
