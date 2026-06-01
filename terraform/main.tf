@@ -24,6 +24,10 @@ module "extract_job" {
   bronze_bucket_arn   = aws_s3_bucket.bronze.arn
   scripts_bucket_name = aws_s3_bucket.scripts.id
   scripts_bucket_arn  = aws_s3_bucket.scripts.arn
-  ingest_date         = "2024-01-01"
+  ingest_date         = var.ingest_date
+  api_start_date      = var.api_start_date
+  api_end_date        = var.api_end_date
+  interval            = var.interval
+  ticker_config_path  = "s3://${aws_s3_bucket.scripts.id}/config/dax40_tickers.json"
   extract_jobs        = local.extract_jobs
 }

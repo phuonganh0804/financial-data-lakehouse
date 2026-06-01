@@ -12,15 +12,15 @@ resource "aws_glue_job" "extract_jobs" {
   }
 
   default_arguments = {
-    "--enable-job-insights"        = "true"
-    "--job-language"               = "python"
-    "--bronze_bucket"              = var.bronze_bucket_name
-    "--ingest_date"                = var.ingest_date
-    "--api_start_date"             = var.api_start_date
-    "--api_end_date"               = var.api_end_date
-    "--interval"                   = var.interval
-    "--ticker_config_path"        = var.ticker_config_path
-    "--additional-python-modules"  = join(",", [
+    "--enable-job-insights" = "true"
+    "--job-language"        = "python"
+    "--bronze_bucket"       = var.bronze_bucket_name
+    "--ingest_date"         = var.ingest_date
+    "--api_start_date"      = var.api_start_date
+    "--api_end_date"        = var.api_end_date
+    "--interval"            = var.interval
+    "--ticker_config_path"  = var.ticker_config_path
+    "--additional-python-modules" = join(",", [
       for whl in fileset("${path.module}/../../assets/dependencies", "*.whl") :
       "s3://${var.scripts_bucket_name}/assets/dependencies/${whl}"
     ])

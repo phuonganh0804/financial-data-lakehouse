@@ -31,7 +31,6 @@ variable "scripts_bucket_arn" {
 variable "ingest_date" {
   description = "Date to ingest data for"
   type        = string
-  default     = "2026-05-31"
 }
 
 variable "api_start_date" {
