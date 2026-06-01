@@ -32,3 +32,4 @@ terraform/assets/dependencies/
 .DS_Store
 Thumbs.db
 terraform/backend.hcl
+terraform/assets/transform_jobs/
