@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "project_name" {
   description = "Project name used for resource naming"
   type        = string
-  default     = "dax-crypto-pipeline"
+  default     = "financial-data-lakehouse"
 }
 
 variable "environment" {
@@ -34,4 +34,10 @@ variable "api_end_date" {
 variable "interval" {
   description = "Data interval (1d, 1h, 15m)"
   type        = string
+}
+
+variable "catalog_database" {
+  description = "Glue catalog database name for Iceberg silver tables"
+  type        = string
+  default     = "financial_data_lakehouse"
 }

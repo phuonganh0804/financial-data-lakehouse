@@ -1,0 +1,10 @@
+{
+  "market": "US",
+  "exchange": "NASDAQ",
+  "universe": "us_tech",
+  "as_of": "2024-01-01",
+  "symbols": [
+    "AAPL", "MSFT", "AMZN", "NVDA",
+    "TSLA", "GOOGL", "META", "ADBE"
+  ]
+}
