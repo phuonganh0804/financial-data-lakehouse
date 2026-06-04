@@ -59,7 +59,22 @@ output "glue_extract_role_name" {
   value       = module.extract_job.glue_role_name
 }
 
-output "glue_job_names" {
+output "glue_extract_job_names" {
   description = "Created Glue extract job names"
   value       = module.extract_job.glue_job_names
+}
+
+output "glue_transform_job_names" {
+  description = "Created Glue transform job names"
+  value       = module.transform_job.glue_job_names
+}
+
+output "glue_transform_role_arn" {
+  description = "Glue transform IAM role ARN"
+  value       = module.transform_job.glue_role_arn
+}
+
+output "glue_catalog_database" {
+  description = "Glue Catalog database name for Iceberg silver tables"
+  value       = module.transform_job.glue_catalog_database
 }
