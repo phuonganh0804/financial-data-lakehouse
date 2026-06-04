@@ -27,17 +27,39 @@ data "aws_iam_policy_document" "glue_access_policy" {
   }
 
   statement {
-    sid    = "WriteBronzeBucket"
-    effect = "Allow"
-    actions = [
-      "s3:PutObject",
-      "s3:ListBucket"
-    ]
-    resources = [
-      var.bronze_bucket_arn,
-      "${var.bronze_bucket_arn}/*"
-    ]
-  }
+  sid    = "ListBronzeBucket"
+  effect = "Allow"
+  actions = [
+    "s3:ListBucket"
+  ]
+  resources = [
+    var.bronze_bucket_arn
+  ]
+}
+
+statement {
+  sid    = "WriteBronzeObjects"
+  effect = "Allow"
+  actions = [
+    "s3:PutObject"
+  ]
+  resources = [
+    "${var.bronze_bucket_arn}/*"
+  ]
+}
+
+statement {
+  sid    = "DeleteOverwrittenBronzeData"
+  effect = "Allow"
+  actions = [
+    "s3:DeleteObject"
+  ]
+  resources = [
+    "${var.bronze_bucket_arn}/fred_macro/*",
+    "${var.bronze_bucket_arn}/binance_klines/*",
+    "${var.bronze_bucket_arn}/equity_prices/*"
+  ]
+}
 
   statement {
     sid    = "GlueCatalogAccess"
@@ -74,7 +96,7 @@ data "aws_iam_policy_document" "glue_access_policy" {
       "ssm:GetParameters"
     ]
     resources = [
-      "arn:aws:ssm:*:${data.aws_caller_identity.current.account_id}:parameter/dax-crypto-pipeline/*"
+      "arn:aws:ssm:*:${data.aws_caller_identity.current.account_id}:parameter/financial-data-lakehouse/*"
     ]
   }
 

@@ -1,4 +1,5 @@
 import sys
+import time
 import requests
 import pandas as pd
 from awsglue.utils import getResolvedOptions
@@ -36,6 +37,10 @@ SYMBOLS        = ['BTCUSDT', 'ETHUSDT']
 MAX_LIMIT      = 1000
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 
+MAX_RETRIES = 3
+RETRY_DELAY = 15
+RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
+
 # Define Schema
 # Raw Binance kline schema — no casting, values as returned
 # Numbers stay StringType  -> Binance returns "50000.00"
@@ -57,19 +62,49 @@ BINANCE_SCHEMA = StructType([
     StructField("ignore",                 StringType(), True),
 ])
 
-# Helpers 
 def to_epoch_ms(date_str: str) -> int:
-    """Convert YYYY-MM-DD string to UTC milliseconds epoch."""
     return int(pd.Timestamp(date_str, tz="UTC").timestamp() * 1000)
 
-# Function to fetch data from API with pagination 
-def fetch_raw(symbol: str) -> list:
-    """
-    Fetch raw klines from Binance REST API with pagination.
 
-    API_END_DATE is treated as exclusive.
-    Example: 2024-01-01 -> 2025-01-01 fetches all daily candles in 2024.
-    """
+def fetch_page(
+    session: requests.Session,
+    symbol: str,
+    params: dict,
+) -> list:
+    last_error = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = session.get(BINANCE_KLINES_URL, params=params, timeout=30)
+
+            if response.status_code in RETRYABLE_HTTP_STATUS:
+                raise RuntimeError(
+                    f"temporary HTTP {response.status_code}: "
+                    f"{response.text[:200]}"
+                )
+
+            response.raise_for_status()
+            return response.json()
+
+        except (RuntimeError, requests.exceptions.RequestException) as e:
+            last_error = e
+
+            if attempt == MAX_RETRIES:
+                break
+
+            sleep_seconds = RETRY_DELAY * attempt
+            print(
+                f"{symbol}: attempt {attempt}/{MAX_RETRIES} failed: {e}. "
+                f"Retrying in {sleep_seconds}s..."
+            )
+            time.sleep(sleep_seconds)
+
+    raise RuntimeError(
+        f"{symbol}: page fetch failed after {MAX_RETRIES} attempts - {last_error}"
+    )
+
+
+def fetch_raw(session: requests.Session, symbol: str) -> list:
     start_ms   = to_epoch_ms(API_START_DATE)
     end_ms     = to_epoch_ms(API_END_DATE)
     all_data   = []
@@ -81,16 +116,14 @@ def fetch_raw(symbol: str) -> list:
             "interval":  INTERVAL,
             "startTime": current_ms,
             "endTime":   end_ms,
-            "limit":     MAX_LIMIT
+            "limit":     MAX_LIMIT,
         }
-        response = requests.get(BINANCE_KLINES_URL, params=params, timeout=30)
-        response.raise_for_status()
 
-        batch = response.json()
+        batch = fetch_page(session, symbol, params)
+
         if not batch:
             break
 
-        # Validate row length before processing
         for row in batch:
             if len(row) != 12:
                 raise ValueError(
@@ -101,10 +134,8 @@ def fetch_raw(symbol: str) -> list:
         all_data.extend(batch)
         print(f"  {symbol}: fetched {len(all_data)} rows so far...")
 
-        # Next page starts after last candle close_time
         current_ms = batch[-1][6] + 1
 
-        # Batch smaller than max_limit means no more pages
         if len(batch) < MAX_LIMIT:
             break
 
@@ -115,7 +146,7 @@ def fetch_raw(symbol: str) -> list:
             f"interval={INTERVAL}"
         )
 
-    print(f"✅ {symbol}: {len(all_data)} total rows fetched")
+    print(f"{symbol}: {len(all_data)} total rows fetched")
     return all_data
 
 # Function to write DataFrames to S3
@@ -149,12 +180,11 @@ def main() -> None:
     print(f"Ingest date: {INGEST_DATE}")
     print(f"Symbols:     {SYMBOLS}")
 
-    for symbol in SYMBOLS:
-        print(f"\nProcessing {symbol}...")
-        # Fetch data from API
-        data = fetch_raw(symbol)
-        # Write DataFrames to S3
-        write_bronze(data, symbol)
+    with requests.Session() as session:
+        for symbol in SYMBOLS:
+            print(f"\nProcessing {symbol}...")
+            data = fetch_raw(session, symbol)
+            write_bronze(data, symbol)
 
     print("\n✅ Binance klines extract complete")
 

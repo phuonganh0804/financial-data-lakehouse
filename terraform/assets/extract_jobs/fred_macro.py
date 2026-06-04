@@ -1,6 +1,9 @@
 import sys
+import time
+import uuid
 import boto3
-from fredapi import Fred
+import requests
+from datetime import datetime, timezone
 from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
 from awsglue.job import Job
@@ -11,7 +14,6 @@ from pyspark.sql.types import (
 )
 from pyspark.sql.functions import lit, current_timestamp
 
-# Initialize Glue context and Spark session
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME',
     'bronze_bucket',
@@ -30,33 +32,43 @@ BRONZE_BUCKET  = args['bronze_bucket']
 INGEST_DATE    = args['ingest_date']
 API_START_DATE = args['api_start_date']
 API_END_DATE   = args['api_end_date']
-SSM_PARAMETER  = '/dax-crypto-pipeline/fred-api-key'
-MAX_FAILED_SERIES = 1
+SSM_PARAMETER  = '/financial-data-lakehouse/fred-api-key'
+MAX_FAILED_SERIES = 0
+
+FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
+MAX_RETRIES = 3
+RETRY_DELAY = 20
+RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
 
 # Macro series config
 # Each series has its own frequency (daily, monthly, quarterly)
 # Frequency is preserved as-is - no resampling in bronze
 # Silver layer handles forward-fill and resampling
 MACRO_SERIES = {
-    'ECBDFR': {
-        'name':      'ECB Deposit Rate',
-        'frequency': 'daily',
-        'unit':      'percent'
+    "DFF": {
+        "name": "Effective Federal Funds Rate",
+        "frequency": "daily",
+        "unit": "percent"
     },
-    'CP0000EZ19M086NEST': {
-        'name':      'Euro Area Inflation HICP',
-        'frequency': 'monthly',
-        'unit':      'index_2015_100'
+    "CPIAUCSL": {
+        "name": "US Consumer Price Index",
+        "frequency": "monthly",
+        "unit": "index_1982_1984_100"
     },
-    'CLVMEURSCAB1GQEA19': {
-        'name':      'Euro Area GDP Growth',
-        'frequency': 'quarterly',
-        'unit':      'millions_eur'
+    "GDPC1": {
+        "name": "US Real GDP",
+        "frequency": "quarterly",
+        "unit": "billions_chained_2017_usd"
     },
-    'T10YIE': {
-        'name':      'US 10Y Inflation Expectations',
-        'frequency': 'daily',
-        'unit':      'percent'
+    "DGS10": {
+        "name": "US 10Y Treasury Yield",
+        "frequency": "daily",
+        "unit": "percent"
+    },
+    "T10YIE": {
+        "name": "US 10Y Inflation Expectations",
+        "frequency": "daily",
+        "unit": "percent"
     },
 }
 
@@ -64,7 +76,7 @@ MACRO_SERIES = {
 # Source-shaped schema — mirrors FRED output exactly
 # date stays StringType     -> casting happens in silver
 # value is DoubleType       -> selected FRED series are numeric;
-#                              missing values are dropped in Bronze
+#                              missing values ("." in FRED) are dropped in bronze
 # frequency + unit included -> important bronze metadata
 #                              tells silver how to resample
 # No interval column        -> FRED series have mixed frequencies
@@ -78,112 +90,150 @@ FRED_SCHEMA = StructType([
     StructField("unit",        StringType(), False),
 ])
 
-# SSM 
+
 def get_api_key(parameter_name: str) -> str:
-    """Retrieve FRED API key from SSM Parameter Store"""
     ssm = boto3.client('ssm', region_name='eu-central-1')
     return ssm.get_parameter(
         Name=parameter_name,
         WithDecryption=True
     )['Parameter']['Value']
 
-# Function to fetch data from API
+
+def fetch_series(
+    session: requests.Session,
+    series_id: str,
+    api_key: str,
+) -> list:
+    params = {
+        "series_id":         series_id,
+        "observation_start": API_START_DATE,
+        "observation_end":   API_END_DATE,
+        "api_key":           api_key,
+        "file_type":         "json",
+    }
+
+    last_error = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = session.get(FRED_URL, params=params, timeout=30)
+
+            if response.status_code in RETRYABLE_HTTP_STATUS:
+                raise RuntimeError(
+                    f"temporary HTTP {response.status_code}: "
+                    f"{response.text[:200]}"
+                )
+
+            response.raise_for_status()
+            data = response.json()
+
+            # FRED uses "." to represent missing observations — drop them
+            return [
+                obs for obs in data.get("observations", [])
+                if obs["value"] != "."
+            ]
+
+        except (RuntimeError, requests.exceptions.RequestException) as e:
+            last_error = e
+
+            if attempt == MAX_RETRIES:
+                break
+
+            sleep_seconds = RETRY_DELAY * attempt
+            print(
+                f"{series_id}: attempt {attempt}/{MAX_RETRIES} failed: {e}. "
+                f"Retrying in {sleep_seconds}s..."
+            )
+            time.sleep(sleep_seconds)
+
+    raise RuntimeError(
+        f"{series_id}: failed after {MAX_RETRIES} attempts - {last_error}"
+    )
+
+
 def fetch_raw(api_key: str) -> tuple:
-    """
-    Fetch raw macro series from FRED API.
-
-    Each series preserved at its native frequency:
-    - Daily:     ECB rate, US 10Y expectations
-    - Monthly:   Euro Area inflation
-    - Quarterly: Euro Area GDP
-
-    No resampling or forward-fill in bronze.
-    Silver layer handles frequency alignment.
-
-    Returns:
-        records: list of row dicts ready for Spark
-        failed:  list of (series_id, meta, reason) tuples
-    """
-    fred    = Fred(api_key=api_key)
     records = []
     failed  = []
 
-    for series_id, meta in MACRO_SERIES.items():
-        try:
-            data = fred.get_series(
-                series_id,
-                observation_start=API_START_DATE,
-                observation_end=API_END_DATE
-            ).dropna()
+    with requests.Session() as session:
+        for series_id, meta in MACRO_SERIES.items():
+            try:
+                observations = fetch_series(session, series_id, api_key)
 
-            if data.empty:
-                raise ValueError(
-                    f"empty series for "
-                    f"{API_START_DATE} -> {API_END_DATE}"
+                if not observations:
+                    raise ValueError(
+                        f"empty series for "
+                        f"{API_START_DATE} -> {API_END_DATE}"
+                    )
+
+                for obs in observations:
+                    records.append({
+                        "date":        obs["date"],
+                        "value":       float(obs["value"]),
+                        "series_id":   series_id,
+                        "series_name": meta["name"],
+                        "frequency":   meta["frequency"],
+                        "unit":        meta["unit"],
+                    })
+
+                print(
+                    f"{meta['name']} "
+                    f"({meta['frequency']}): "
+                    f"{len(observations)} observations"
                 )
 
-            for date, value in data.items():
-                records.append({
-                    "date":        str(date.date()),
-                    "value":       float(value),
-                    "series_id":   series_id,
-                    "series_name": meta['name'],
-                    "frequency":   meta['frequency'],
-                    "unit":        meta['unit'],
-                })
-
-            print(
-                f"{meta['name']} "
-                f"({meta['frequency']}): "
-                f"{len(data)} observations"
-            )
-
-        except Exception as e:
-            failed.append((series_id, meta, str(e)))
-            print(f"{series_id}: failed — {e}")
+            except Exception as e:
+                failed.append((series_id, meta, str(e)))
+                print(f"{series_id}: failed — {e}")
 
     return records, failed
 
-# Write failed audit 
+
 def write_failed_audit(failed: list) -> None:
-    """
-    Write failed series to S3 as audit file.
-    Consistent pattern with yfinance audit.
-    """
     if not failed:
+        print("No FRED failures detected. Skipping audit write.")
         return
+
+    run_id = (
+        f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_"
+        f"{uuid.uuid4().hex[:8]}"
+    )
 
     audit_path = (
         f"s3://{BRONZE_BUCKET}/audit/fred_macro/"
         f"ingest_date={INGEST_DATE}/"
-        f"failed_series/"
+        f"audit_type=failed_series/"
+        f"run_id={run_id}/"
     )
 
     audit_records = [
         {
-            "series_id": series_id,
-            "reason": reason,
-            "series_name": meta['name'],
-            "frequency":   meta['frequency'],
-            "unit":        meta['unit'],
-            "source": "fred",
+            "series_id":      series_id,
+            "reason":         reason,
+            "series_name":    meta["name"],
+            "frequency":      meta["frequency"],
+            "unit":           meta["unit"],
+            "source":         "fred",
             "api_start_date": API_START_DATE,
-            "api_end_date": API_END_DATE,
-            "ingest_date": INGEST_DATE,
+            "api_end_date":   API_END_DATE,
+            "ingest_date":    INGEST_DATE,
         }
         for series_id, meta, reason in failed
     ]
 
-    spark.createDataFrame(audit_records) \
-        .withColumn("audited_at", current_timestamp()) \
-        .coalesce(1) \
-        .write \
-        .mode("overwrite") \
+    (
+        spark.createDataFrame(audit_records)
+        .withColumn("run_id", lit(run_id))
+        .withColumn("audited_at", current_timestamp())
+        .coalesce(1)
+        .write
+        .mode("errorifexists")
         .json(audit_path)
+    )
 
     print(f"Audit written: {audit_path}")
 
-# Function to write DataFrames to S3
+
 def write_bronze(records: list) -> None:
     s3_path = (
         f"s3://{BRONZE_BUCKET}/fred_macro/"
@@ -200,9 +250,9 @@ def write_bronze(records: list) -> None:
          .mode("overwrite") \
          .parquet(s3_path)
 
-    print(f"✅ FRED: written to {s3_path}")
+    print(f"FRED: written to {s3_path}")
 
-# Main 
+
 def main() -> None:
     print(f"Starting FRED macro extract")
     print(f"Date range:  {API_START_DATE} -> {API_END_DATE}")
@@ -215,20 +265,16 @@ def main() -> None:
 
     records, failed = fetch_raw(api_key)
 
-    # Write audit for failed series
     write_failed_audit(failed)
 
-    # Log failures
     if failed:
-        print(f"\n Failed series ({len(failed)}):")
+        print(f"\nFailed series ({len(failed)}):")
         for series_id, meta, reason in failed:
-            print(f"   {series_id} ({meta['frequency']}): {reason}")
+            print(f"  {series_id} ({meta['frequency']}): {reason}")
 
-    # FRED has only 4 series — any failure is significant
-    # Abort if more than 1 series fails
     if len(failed) > MAX_FAILED_SERIES:
         raise RuntimeError(
-            f"{len(failed)}/4 FRED series failed — "
+            f"{len(failed)}/{len(MACRO_SERIES)} FRED series failed — "
             f"aborting to prevent incomplete macro data. "
             f"Failed: {[s for s, _, _ in failed]}"
         )
@@ -239,12 +285,15 @@ def main() -> None:
             f"{API_START_DATE} -> {API_END_DATE}"
         )
 
-    print(f"\nFetched {len(records)} total records "
-          f"from {len(MACRO_SERIES) - len(failed)} series")
+    print(
+        f"\nFetched {len(records)} total records "
+        f"from {len(MACRO_SERIES) - len(failed)} series"
+    )
 
     write_bronze(records)
 
     print("\nFRED macro extract complete")
+
 
 main()
 job.commit()
