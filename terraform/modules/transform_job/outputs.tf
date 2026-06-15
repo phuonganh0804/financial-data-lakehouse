@@ -10,5 +10,5 @@ output "glue_job_names" {
 
 output "glue_catalog_database" {
   description = "Glue Catalog database name for Iceberg silver tables"
-  value       = aws_glue_catalog_database.silver.name
+  value       = aws_glue_catalog_database.transform_db.name
 }

@@ -1,22 +1,22 @@
-import sys
 import json
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
 
 import boto3
 import requests
-from awsglue.context import GlueContext
-from awsglue.job import Job
 from awsglue.utils import getResolvedOptions
-from pyspark.context import SparkContext
-from pyspark.sql.functions import current_timestamp, lit
-from pyspark.sql.types import StructField, StructType, StringType
 
+# Glue Python Shell job — pure ingestion, no Spark.
+# Stores the full Twelve Data response BYTE-FOR-BYTE in the immutable landing
+# zone: one file per symbol containing the complete {meta, values, status}
+# payload exactly as returned. Nothing is projected or cast here — the bronze
+# job explodes `values` and pulls `meta`. Request context (provider, market,
+# exchange, interval, symbol, ingest_date, run_id) is encoded in the path.
 
 args = getResolvedOptions(sys.argv, [
-    "JOB_NAME",
-    "bronze_bucket",
+    "landing_bucket",
     "ingest_date",
     "api_start_date",
     "api_end_date",
@@ -24,13 +24,7 @@ args = getResolvedOptions(sys.argv, [
     "ticker_config_path",
 ])
 
-sc = SparkContext()
-glueContext = GlueContext(sc)
-spark = glueContext.spark_session
-job = Job(glueContext)
-job.init(args["JOB_NAME"], args)
-
-BRONZE_BUCKET = args["bronze_bucket"]
+LANDING_BUCKET = args["landing_bucket"]
 INGEST_DATE = args["ingest_date"]
 API_START_DATE = args["api_start_date"]
 API_END_DATE = args["api_end_date"]
@@ -51,28 +45,35 @@ FAILURE_THRESHOLD = 0
 RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
 RETRYABLE_API_MESSAGES = ("rate limit", "too many requests")
 
-# Schema 
-# Source-shaped schema — mirrors Twelvedata output exactly
-# All values returned as strings by Twelvedata API
-# No adj_close available on free tier
-# -> noted as known limitation, silver decides
-# Casting to proper types happens in silver layer
-EQUITY_SCHEMA = StructType([
-    StructField("datetime", StringType(), False),
-    StructField("open", StringType(), True),
-    StructField("high", StringType(), True),
-    StructField("low", StringType(), True),
-    StructField("close", StringType(), True),
-    StructField("volume", StringType(), True),
-    StructField("symbol", StringType(), False),
-    StructField("currency", StringType(), True),
-    StructField("exchange", StringType(), True),
-    StructField("exchange_timezone", StringType(), True),
-    StructField("mic_code", StringType(), True),
-    StructField("instrument_type", StringType(), True),
-])
+# Unique per run — landing keys include it, so payloads are append-only.
+RUN_ID = (
+    f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_"
+    f"{uuid.uuid4().hex[:8]}"
+)
 
-def parse_s3_uri(s3_uri: str) -> tuple[str, str]:
+s3 = boto3.client("s3")
+
+
+def put_raw(bucket: str, key: str, raw_text: str) -> None:
+    s3.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=raw_text.encode("utf-8"),
+        ContentType="application/json",
+    )
+
+
+def put_jsonl(bucket: str, key: str, records: list) -> None:
+    body = "\n".join(json.dumps(r) for r in records).encode("utf-8")
+    s3.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=body,
+        ContentType="application/x-ndjson",
+    )
+
+
+def parse_s3_uri(s3_uri: str) -> tuple:
     if not s3_uri.startswith("s3://"):
         raise ValueError(f"Expected S3 URI, got: {s3_uri}")
 
@@ -87,7 +88,7 @@ def parse_s3_uri(s3_uri: str) -> tuple[str, str]:
 
 def load_ticker_config(s3_uri: str) -> dict:
     bucket, key = parse_s3_uri(s3_uri)
-    body = boto3.client("s3").get_object(Bucket=bucket, Key=key)["Body"].read()
+    body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
     config = json.loads(body)
 
     required = ["market", "exchange", "symbols"]
@@ -97,7 +98,7 @@ def load_ticker_config(s3_uri: str) -> dict:
 
     if not isinstance(config["symbols"], list):
         raise ValueError("Ticker config field 'symbols' must be a list")
-    
+
     if not config["symbols"]:
         raise ValueError("Ticker config field 'symbols' must be non-empty")
 
@@ -130,12 +131,14 @@ def sleep_before_retry(symbol: str, attempt: int, error: Exception) -> None:
     )
     time.sleep(sleep_seconds)
 
+
 def fetch_symbol(
     session: requests.Session,
     symbol: str,
     api_key: str,
     exchange: str,
-) -> tuple[list, dict]:
+) -> requests.Response:
+    """Return the raw HTTP response; validation reads it but never alters it."""
     params = {
         "symbol": symbol,
         "exchange": exchange,
@@ -175,15 +178,14 @@ def fetch_symbol(
 
                 raise ValueError(f"{symbol}: API error - {message}")
 
-            values = data.get("values")
-            if not values:
+            if not data.get("values"):
                 raise ValueError(
                     f"{symbol}: empty response for "
                     f"{API_START_DATE} -> {API_END_DATE}"
                 )
 
-            print(f"{symbol}: {len(values)} rows fetched")
-            return values, data.get("meta", {})
+            print(f"{symbol}: {len(data['values'])} rows fetched")
+            return response
 
         except (RuntimeError, requests.exceptions.RequestException) as e:
             last_error = e
@@ -197,9 +199,24 @@ def fetch_symbol(
         f"{symbol}: failed after {MAX_RETRIES} attempts - {last_error}"
     )
 
-# Fetch all symbols
-def fetch_raw(config: dict, api_key: str) -> tuple[list, list]:
-    records = []
+
+def land_symbol(response: requests.Response, config: dict, symbol: str) -> None:
+    key = (
+        f"equity_prices/"
+        f"provider=twelvedata/"
+        f"market={config['market']}/"
+        f"exchange={config['exchange']}/"
+        f"interval={INTERVAL}/"
+        f"symbol={symbol}/"
+        f"ingest_date={INGEST_DATE}/"
+        f"run_id={RUN_ID}/"
+        f"response.json"
+    )
+    put_raw(LANDING_BUCKET, key, response.text)
+    print(f"{symbol}: raw response landed -> s3://{LANDING_BUCKET}/{key}")
+
+
+def land_all(config: dict, api_key: str) -> list:
     failed = []
 
     symbols = config["symbols"]
@@ -208,24 +225,8 @@ def fetch_raw(config: dict, api_key: str) -> tuple[list, list]:
     with requests.Session() as session:
         for index, symbol in enumerate(symbols):
             try:
-                values, meta = fetch_symbol(session, symbol, api_key, exchange)
-
-                for row in values:
-                    records.append({
-                        "datetime": row["datetime"],
-                        "open": row.get("open"),
-                        "high": row.get("high"),
-                        "low": row.get("low"),
-                        "close": row.get("close"),
-                        "volume": row.get("volume"),
-                        "symbol": symbol,
-                        "currency": meta.get("currency"),
-                        "exchange": meta.get("exchange", exchange),
-                        "exchange_timezone": meta.get("exchange_timezone"),
-                        "mic_code": meta.get("mic_code"),
-                        "instrument_type": meta.get("type"),
-                    })
-
+                response = fetch_symbol(session, symbol, api_key, exchange)
+                land_symbol(response, config, symbol)
             except Exception as e:
                 failed.append((symbol, str(e)))
                 print(f"{symbol}: failed - {e}")
@@ -233,117 +234,65 @@ def fetch_raw(config: dict, api_key: str) -> tuple[list, list]:
             if index < len(symbols) - 1:
                 time.sleep(REQUEST_DELAY)
 
-    return records, failed
+    return failed
 
-# Write failed audit
+
 def write_failed_audit(failed: list, config: dict) -> None:
-    """
-    Write failed Twelve Data symbols to S3 as append-only audit records.
-    Each run writes to a unique path, so no S3 delete permission is needed.
-    """
+    """Append-only audit of failed Twelve Data symbols, partitioned like the
+    data it shadows. The run's constant dimensions (provider/market/exchange/
+    interval/ingest_date) live in the path; only the per-row fields (symbol,
+    reason) and run-level context stay in the record."""
     if not failed:
         print("No Twelve Data failures detected. Skipping audit write.")
         return
-
-    market = config["market"]
-    exchange = config["exchange"]
-    universe = config.get("universe", "unknown")
-
-    run_id = (
-        f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_"
-        f"{uuid.uuid4().hex[:8]}"
-    )
-
-    audit_path = (
-        f"s3://{BRONZE_BUCKET}/audit/equity_prices/"
-        f"provider=twelvedata/"
-        f"market={market}/"
-        f"exchange={exchange}/"
-        f"interval={INTERVAL}/"
-        f"ingest_date={INGEST_DATE}/"
-        f"audit_type=failed_symbols/"
-        f"run_id={run_id}/"
-    )
 
     audit_records = [
         {
             "symbol": symbol,
             "reason": reason,
-            "source": "twelvedata",
-            "market": market,
-            "exchange": exchange,
-            "universe": universe,
-            "interval": INTERVAL,
+            "universe": config.get("universe", "unknown"),
             "api_start_date": API_START_DATE,
             "api_end_date": API_END_DATE,
-            "ingest_date": INGEST_DATE,
+            "audited_at": datetime.now(timezone.utc).isoformat(),
         }
         for symbol, reason in failed
     ]
 
-    (
-        spark.createDataFrame(audit_records)
-        .withColumn("run_id", lit(run_id))
-        .withColumn("audited_at", current_timestamp())
-        .coalesce(1)
-        .write
-        .mode("errorifexists")
-        .json(audit_path)
-    )
-
-    print(f"Audit written: {audit_path}")
-
-# Function to write DataFrames to S3
-def write_bronze(records: list, config: dict) -> None:
-    market = config["market"]
-    exchange = config["exchange"]
-
-    s3_path = (
-        f"s3://{BRONZE_BUCKET}/equity_prices/"
+    key = (
+        f"audit/equity_prices/"
         f"provider=twelvedata/"
-        f"market={market}/"
-        f"exchange={exchange}/"
+        f"market={config['market']}/"
+        f"exchange={config['exchange']}/"
         f"interval={INTERVAL}/"
         f"ingest_date={INGEST_DATE}/"
+        f"audit_type=failed_symbols/"
+        f"run_id={RUN_ID}/"
+        f"audit.jsonl"
     )
+    put_jsonl(LANDING_BUCKET, key, audit_records)
+    print(f"Audit written: s3://{LANDING_BUCKET}/{key}")
 
-    spark.createDataFrame(records, schema=EQUITY_SCHEMA) \
-        .withColumn("source", lit("twelvedata")) \
-        .withColumn("market", lit(market)) \
-        .withColumn("interval", lit(INTERVAL)) \
-        .withColumn("api_start_date", lit(API_START_DATE)) \
-        .withColumn("api_end_date", lit(API_END_DATE)) \
-        .withColumn("ingest_date", lit(INGEST_DATE)) \
-        .withColumn("ingested_at", current_timestamp()) \
-        .write \
-        .mode("overwrite") \
-        .parquet(s3_path)
 
-    print(f"Equities written to {s3_path}")
-
-# Main 
 def main() -> None:
-    print("Starting Twelve Data equities extract")
+    print("Starting Twelve Data equities landing")
     print(f"Interval:    {INTERVAL}")
     print(f"Date range:  {API_START_DATE} -> {API_END_DATE} (exclusive)")
     print(f"Ingest date: {INGEST_DATE}")
+    print(f"Run id:      {RUN_ID}")
     print(f"Config path: {TICKER_CONFIG_PATH}")
 
     config = load_ticker_config(TICKER_CONFIG_PATH)
     symbols = config["symbols"]
-    market = config["market"]
-    exchange = config["exchange"]
-    universe = config.get("universe", "unknown")
 
-    print(f"Market:      {market}")
-    print(f"Exchange:    {exchange}")
-    print(f"Universe:    {universe}")
+    print(f"Market:      {config['market']}")
+    print(f"Exchange:    {config['exchange']}")
+    print(f"Universe:    {config.get('universe', 'unknown')}")
     print(f"Symbols:     {len(symbols)}")
 
     api_key = get_api_key()
     print("API key retrieved from SSM")
 
-    records, failed = fetch_raw(config, api_key)
+    failed = land_all(config, api_key)
 
     write_failed_audit(failed, config)
 
@@ -359,24 +308,11 @@ def main() -> None:
             f"Failure rate {failure_rate:.0%} exceeds "
             f"threshold {FAILURE_THRESHOLD:.0%} - "
             f"{len(failed)}/{len(symbols)} symbols failed. "
-            f"Aborting to prevent partial data in bronze."
+            f"Aborting to prevent partial data in landing."
         )
 
-    if not records:
-        raise ValueError(
-            f"Equities: no records fetched for "
-            f"{API_START_DATE} -> {API_END_DATE}, "
-            f"market={market}, exchange={exchange}, interval={INTERVAL}"
-        )
+    print(f"Landed {len(symbols) - len(failed)}/{len(symbols)} symbols")
+    print("Twelve Data equities landing complete")
 
-    print(
-        f"Fetched {len(records)} total rows "
-        f"from {len(symbols) - len(failed)} symbols"
-    )
-
-    write_bronze(records, config)
-
-    print("Twelve Data equities extract complete")
 
 main()
-job.commit()

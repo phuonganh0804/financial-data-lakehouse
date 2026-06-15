@@ -38,7 +38,7 @@ variable "scripts_bucket_arn" {
   type        = string
 }
 
-variable "glue_catalog_database" {
+variable "catalog_database" {
   description = "Glue catalog database name for Iceberg tables"
   type        = string
 }

@@ -22,10 +22,11 @@ SILVER_BUCKET    = args["silver_bucket"]
 CATALOG_DATABASE = args["catalog_database"]
 TABLE_NAME       = args["table_name"]
 INGEST_DATE      = args["ingest_date"]
-INTERVAL         = args["interval"]
+INTERVAL_MAP     = {"1d": "1day", "1w": "1week", "1mo": "1month"}
+INTERVAL         = INTERVAL_MAP.get(args["interval"], args["interval"])
 
 FULL_TABLE_NAME = f"glue_catalog.{CATALOG_DATABASE}.{TABLE_NAME}"
-BRONZE_PATH     = f"s3://{BRONZE_BUCKET}/binance_klines/"
+BRONZE_PATH     = f"s3://{BRONZE_BUCKET}/equity_prices/"
 
 conf = SparkConf()
 conf.set(
@@ -36,7 +37,7 @@ conf.set("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalo
 conf.set("spark.sql.catalog.glue_catalog.warehouse", f"s3://{SILVER_BUCKET}/")
 conf.set("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
 conf.set("spark.sql.catalog.glue_catalog.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-# Read bronze partition columns (ingest_date, interval, symbol) as strings
+# Read bronze partition columns (market, interval, ingest_date) as strings
 # rather than inferring DateType from "ingest_date=2024-01-01" dir names.
 conf.set("spark.sql.sources.partitionColumnTypeInference.enabled", "false")
 
@@ -48,10 +49,9 @@ job.init(args["JOB_NAME"], args)
 
 NUMERIC_COLS = [
     "open", "high", "low", "close", "volume",
-    "quote_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
 ]
 
-DROP_COLS = ["ignore", "api_start_date", "api_end_date", "ingested_at"]
+DROP_COLS = ["api_start_date", "api_end_date", "ingested_at"]
 
 
 def read_bronze():
@@ -67,9 +67,17 @@ def read_bronze():
 def transform(df):
     df = (
         df
-        .withColumn("open_time",  F.to_timestamp(F.from_unixtime(F.col("open_time")  / 1000)))
-        .withColumn("close_time", F.to_timestamp(F.from_unixtime(F.col("close_time") / 1000)))
-        .withColumn("date",       F.to_date(F.col("open_time")))
+        # Twelve Data returns datetime as date-only ("2024-01-02") for daily
+        # intervals and with a time component for intraday — try both so daily
+        # data doesn't parse to NULL.
+        .withColumn(
+            "datetime",
+            F.coalesce(
+                F.to_timestamp(F.col("datetime"), "yyyy-MM-dd HH:mm:ss"),
+                F.to_timestamp(F.col("datetime"), "yyyy-MM-dd"),
+            ),
+        )
+        .withColumn("date", F.to_date(F.col("datetime")))
     )
 
     for c in NUMERIC_COLS:
@@ -79,7 +87,7 @@ def transform(df):
         df
         .drop(*DROP_COLS)
         # Deduplicate before merge — duplicate rows on the natural key cause MERGE to fail
-        .dropDuplicates(["symbol", "open_time"])
+        .dropDuplicates(["symbol", "datetime"])
         .withColumn("transformed_at", F.current_timestamp())
     )
 
@@ -105,14 +113,14 @@ def write_silver(df) -> None:
         spark.sql(f"""
             MERGE INTO {FULL_TABLE_NAME} t
             USING new_data s
-            ON t.date = s.date AND t.symbol = s.symbol AND t.open_time = s.open_time
+            ON t.date = s.date AND t.symbol = s.symbol AND t.datetime = s.datetime
             WHEN MATCHED THEN UPDATE SET *
             WHEN NOT MATCHED THEN INSERT *
         """)
 
 
 def main() -> None:
-    print(f"Starting Binance silver transform")
+    print(f"Starting equity prices silver transform")
     print(f"Ingest date: {INGEST_DATE}")
     print(f"Interval:    {INTERVAL}")
     print(f"Table:       {FULL_TABLE_NAME}")
@@ -123,7 +131,7 @@ def main() -> None:
 
     if row_count == 0:
         raise ValueError(
-            f"No bronze data found for binance_klines "
+            f"No bronze data found for equity_prices "
             f"ingest_date={INGEST_DATE} interval={INTERVAL}"
         )
 
@@ -131,7 +139,7 @@ def main() -> None:
 
     write_silver(df)
 
-    print("Binance silver transform complete")
+    print("Equity prices silver transform complete")
 
 
 main()

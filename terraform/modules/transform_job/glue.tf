@@ -1,4 +1,4 @@
-resource "aws_glue_catalog_database" "silver" {
+resource "aws_glue_catalog_database" "transform_db" {
   name        = var.catalog_database
   description = "Glue Catalog database for transformations"
 }
@@ -17,15 +17,16 @@ resource "aws_glue_job" "transform_jobs" {
   }
 
   default_arguments = {
-    "--enable-job-insights"  = "true"
-    "--job-language"         = "python"
-    "--datalake-formats"     = "iceberg"
-    "--bronze_bucket"        = var.bronze_bucket_name
-    "--silver_bucket"        = var.silver_bucket_name
-    "--catalog_database"     = var.catalog_database
-    "--table_name"           = each.value.table_name
-    "--ingest_date"          = var.ingest_date
-    "--interval"             = var.interval
+    "--enable-job-insights"     = "true"
+    "--job-language"            = "python"
+    "--datalake-formats"        = "iceberg"
+    "--enable-glue-datacatalog" = "true"
+    "--bronze_bucket"           = var.bronze_bucket_name
+    "--silver_bucket"           = var.silver_bucket_name
+    "--catalog_database"        = aws_glue_catalog_database.transform_db.name
+    "--table_name"              = each.value.table_name
+    "--ingest_date"             = var.ingest_date
+    "--interval"                = var.interval
   }
 
   timeout           = each.value.timeout

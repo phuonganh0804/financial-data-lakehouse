@@ -1,0 +1,34 @@
+{
+  "series": [
+    {
+      "series_id": "DFF",
+      "name": "Effective Federal Funds Rate",
+      "frequency": "daily",
+      "unit": "percent"
+    },
+    {
+      "series_id": "CPIAUCSL",
+      "name": "US Consumer Price Index",
+      "frequency": "monthly",
+      "unit": "index_1982_1984_100"
+    },
+    {
+      "series_id": "GDPC1",
+      "name": "US Real GDP",
+      "frequency": "quarterly",
+      "unit": "billions_chained_2017_usd"
+    },
+    {
+      "series_id": "DGS10",
+      "name": "US 10Y Treasury Yield",
+      "frequency": "daily",
+      "unit": "percent"
+    },
+    {
+      "series_id": "T10YIE",
+      "name": "US 10Y Inflation Expectations",
+      "frequency": "daily",
+      "unit": "percent"
+    }
+  ]
+}

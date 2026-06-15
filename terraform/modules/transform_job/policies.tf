@@ -60,6 +60,7 @@ data "aws_iam_policy_document" "glue_access_policy" {
     actions = [
       "glue:GetDatabase",
       "glue:GetDatabases",
+      "glue:CreateDatabase",
       "glue:GetTable",
       "glue:GetTables",
       "glue:CreateTable",
@@ -71,9 +72,26 @@ data "aws_iam_policy_document" "glue_access_policy" {
     ]
     resources = [
       "arn:aws:glue:*:${data.aws_caller_identity.current.account_id}:catalog",
+      "arn:aws:glue:*:${data.aws_caller_identity.current.account_id}:database/default",
       "arn:aws:glue:*:${data.aws_caller_identity.current.account_id}:database/${var.catalog_database}",
       "arn:aws:glue:*:${data.aws_caller_identity.current.account_id}:table/${var.catalog_database}/*",
     ]
+  }
+
+  # Glue Data Quality — evaluate the rulesets against the silver tables and
+  # publish results/metrics. Used by standalone DQ runs and the Airflow DQ task
+  # (both assume this role). cloudwatch:PutMetricData is for DQ score metrics.
+  statement {
+    sid    = "GlueDataQuality"
+    effect = "Allow"
+    # Wildcard covers the full DQ run lifecycle (start/get/publish results +
+    # statistic annotations) so we don't chase one missing action at a time.
+    # Tighten to an explicit least-privilege list later if desired.
+    actions = [
+      "glue:*DataQuality*",
+      "cloudwatch:PutMetricData",
+    ]
+    resources = ["*"]
   }
 
   statement {

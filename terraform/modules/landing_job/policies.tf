@@ -27,52 +27,27 @@ data "aws_iam_policy_document" "glue_access_policy" {
   }
 
   statement {
-  sid    = "ListBronzeBucket"
-  effect = "Allow"
-  actions = [
-    "s3:ListBucket"
-  ]
-  resources = [
-    var.bronze_bucket_arn
-  ]
-}
-
-statement {
-  sid    = "WriteBronzeObjects"
-  effect = "Allow"
-  actions = [
-    "s3:PutObject"
-  ]
-  resources = [
-    "${var.bronze_bucket_arn}/*"
-  ]
-}
-
-statement {
-  sid    = "DeleteOverwrittenBronzeData"
-  effect = "Allow"
-  actions = [
-    "s3:DeleteObject"
-  ]
-  resources = [
-    "${var.bronze_bucket_arn}/fred_macro/*",
-    "${var.bronze_bucket_arn}/binance_klines/*",
-    "${var.bronze_bucket_arn}/equity_prices/*"
-  ]
-}
-
-  statement {
-    sid    = "GlueCatalogAccess"
+    sid    = "ListLandingBucket"
     effect = "Allow"
     actions = [
-      "glue:GetDatabase",
-      "glue:GetTable",
-      "glue:CreateTable",
-      "glue:UpdateTable",
-      "glue:GetPartitions",
-      "glue:BatchCreatePartition"
+      "s3:ListBucket",
     ]
-    resources = ["*"]
+    resources = [
+      var.landing_bucket_arn,
+    ]
+  }
+
+  # Landing is the immutable raw zone — write only, never delete. Each run
+  # writes to a unique run_id prefix, so raw payloads are append-only.
+  statement {
+    sid    = "WriteLandingObjects"
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+    ]
+    resources = [
+      "${var.landing_bucket_arn}/*",
+    ]
   }
 
   statement {
@@ -109,6 +84,3 @@ statement {
     resources = ["*"]
   }
 }
-
-
-

@@ -1,3 +1,13 @@
+output "landing_bucket_name" {
+  description = "Landing layer (raw, immutable) S3 bucket name"
+  value       = aws_s3_bucket.landing.id
+}
+
+output "landing_bucket_arn" {
+  description = "Landing layer (raw, immutable) S3 bucket ARN"
+  value       = aws_s3_bucket.landing.arn
+}
+
 output "bronze_bucket_name" {
   description = "Bronze layer S3 bucket name"
   value       = aws_s3_bucket.bronze.id
@@ -49,19 +59,32 @@ output "gold_bucket_arn" {
   value       = aws_s3_bucket.gold.arn
 }
 
-output "glue_extract_role_arn" {
-  description = "Glue extract IAM role ARN"
-  value       = module.extract_job.glue_role_arn
+# Landing module
+output "glue_landing_role_arn" {
+  description = "Glue landing IAM role ARN"
+  value       = module.landing_job.glue_role_arn
 }
 
-output "glue_extract_role_name" {
-  description = "Glue extract IAM role name"
-  value       = module.extract_job.glue_role_name
+output "glue_landing_job_names" {
+  description = "Created Glue landing job names"
+  value       = module.landing_job.glue_job_names
 }
 
-output "glue_extract_job_names" {
-  description = "Created Glue extract job names"
-  value       = module.extract_job.glue_job_names
+# Bronze module
+output "glue_bronze_role_arn" {
+  description = "Glue bronze IAM role ARN"
+  value       = module.bronze_job.glue_role_arn
+}
+
+output "glue_bronze_job_names" {
+  description = "Created Glue bronze job names"
+  value       = module.bronze_job.glue_job_names
+}
+
+# Transform module
+output "glue_transform_role_arn" {
+  description = "Glue transform IAM role ARN"
+  value       = module.transform_job.glue_role_arn
 }
 
 output "glue_transform_job_names" {
@@ -69,12 +92,23 @@ output "glue_transform_job_names" {
   value       = module.transform_job.glue_job_names
 }
 
-output "glue_transform_role_arn" {
-  description = "Glue transform IAM role ARN"
-  value       = module.transform_job.glue_role_arn
-}
-
 output "glue_catalog_database" {
   description = "Glue Catalog database name for Iceberg silver tables"
   value       = module.transform_job.glue_catalog_database
+}
+
+# Serving module
+output "athena_workgroup" {
+  description = "Athena workgroup name"
+  value       = module.serving.workgroup_name
+}
+
+output "athena_query_results" {
+  description = "S3 location for Athena query results"
+  value       = module.serving.query_results_location
+}
+
+output "gold_database" {
+  description = "Glue Catalog database for the gold (dbt) serving layer"
+  value       = module.serving.gold_database
 }

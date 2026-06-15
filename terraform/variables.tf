@@ -39,5 +39,6 @@ variable "interval" {
 variable "catalog_database" {
   description = "Glue catalog database name for Iceberg silver tables"
   type        = string
-  default     = "financial_data_lakehouse"
+  default     = "financial_data_lakehouse_silver"
 }
+
