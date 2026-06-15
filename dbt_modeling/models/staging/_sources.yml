@@ -8,7 +8,28 @@ sources:
     tables:
       - name: binance_klines
         description: "Crypto OHLCV klines (Binance), typed and de-duplicated."
+        # Freshness on the silver load timestamp (transformed_at), NOT the data
+        # date — measures "did the pipeline refresh recently", which avoids the
+        # weekend/cadence false-alarms a data-date check would cause. Binance is
+        # 24/7, so thresholds are tight.
+        loaded_at_field: transformed_at
+        freshness:
+          warn_after:  {count: 1, period: day}
+          error_after: {count: 2, period: day}
       - name: equity_prices
         description: "Equity OHLCV bars (Twelve Data), typed and de-duplicated."
+        # NASDAQ-gated: skips weekends/holidays, so transformed_at legitimately
+        # lags over closures. WARN-ONLY (no error_after) — a rare holiday warning
+        # is benign; the DAG's own task status is the real "did it run" check, so
+        # freshness never blocks the build.
+        loaded_at_field: transformed_at
+        freshness:
+          warn_after: {count: 2, period: day}
       - name: fred_macro
         description: "FRED macro observations, one row per series/date."
+        # SIFMA-gated: same weekend/holiday lag as equities, so warn-only too.
+        # Per-series cadence (monthly/quarterly) is NOT a concern here — this is
+        # table-level max(transformed_at), kept current by the daily series.
+        loaded_at_field: transformed_at
+        freshness:
+          warn_after: {count: 2, period: day}
