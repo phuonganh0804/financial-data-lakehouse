@@ -1,0 +1,9 @@
+{
+  "exchange": "BINANCE",
+  "quote_currency": "USDT",
+  "universe": "majors",
+  "as_of": "2024-01-01",
+  "symbols": [
+    "BTCUSDT", "ETHUSDT"
+  ]
+}
