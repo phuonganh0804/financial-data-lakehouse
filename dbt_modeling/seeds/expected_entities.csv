@@ -1,0 +1,16 @@
+source,entity_id
+crypto,BTCUSDT
+crypto,ETHUSDT
+equity,AAPL
+equity,MSFT
+equity,AMZN
+equity,NVDA
+equity,TSLA
+equity,GOOGL
+equity,META
+equity,ADBE
+fred,DFF
+fred,CPIAUCSL
+fred,GDPC1
+fred,DGS10
+fred,T10YIE

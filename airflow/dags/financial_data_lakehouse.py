@@ -133,11 +133,20 @@ def financial_data_lakehouse():
         # DQ failure still blocks dbt — the gate is preserved.
         trigger_rule="none_failed_min_one_success",
         environment={"GOLD_BUCKET": GOLD_BUCKET, "AWS_REGION": REGION},
-        command=(
+        # Source freshness runs first but is NON-BLOCKING: the `;` lets the build
+        # run regardless of its exit code. Freshness is warn-only for the gated
+        # sources (a stale equity/FRED source on a weekend shouldn't block gold),
+        # and the build's own tests are the hard gate. `dbt build` then runs the
+        # coverage seed + models + all data tests (recency/coverage) in one step.
+        command=[
+            "bash", "-c",
+            "dbt source freshness "
+            "--project-dir /usr/app/dbt_modeling "
+            "--profiles-dir /usr/app/dbt_modeling; "
             "dbt build "
             "--project-dir /usr/app/dbt_modeling "
-            "--profiles-dir /usr/app/dbt_modeling"
-        ),
+            "--profiles-dir /usr/app/dbt_modeling",
+        ],
         mounts=[
             # Host paths come from docker-compose env (a sibling container runs on
             # the host daemon, so these must be host paths). Read via os.environ —
