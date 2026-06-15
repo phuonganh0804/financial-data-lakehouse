@@ -1,0 +1,96 @@
+version: 2
+
+models:
+  # ---- Dimensions ----
+  - name: dim_date
+    description: "Conformed calendar dimension covering every date present in any fact."
+    columns:
+      - name: date_day
+        tests: [not_null, unique]
+
+  - name: dim_symbol
+    description: "Instrument dimension keyed on (exchange, symbol) via symbol_key."
+    columns:
+      - name: symbol_key
+        tests: [not_null, unique]
+      - name: asset_class
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['crypto', 'equity']
+
+  - name: dim_series
+    description: "FRED macro series reference (name, frequency, unit)."
+    columns:
+      - name: series_id
+        tests: [not_null, unique]
+
+  # ---- Facts ----
+  - name: fct_daily_prices
+    description: "Daily OHLCV across crypto and equities. Grain: one instrument per day."
+    columns:
+      - name: price_key
+        tests: [not_null, unique]
+      - name: symbol_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_symbol')
+                field: symbol_key
+      - name: date_day
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: close
+        tests: [not_null]
+
+  - name: fct_returns
+    description: "Daily/log returns and 30-day rolling volatility. Grain: one instrument per day."
+    columns:
+      - name: return_key
+        tests: [not_null, unique]
+      - name: symbol_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_symbol')
+                field: symbol_key
+      - name: date_day
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+
+  - name: fct_macro
+    description: "FRED macro values. Grain: one series per day."
+    columns:
+      - name: macro_key
+        tests: [not_null, unique]
+      - name: series_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_series')
+                field: series_id
+      - name: date_day
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+
+  # ---- Report mart ----
+  - name: mart_returns_vs_macro
+    description: "Asset daily returns aligned with forward-filled daily macro (fed funds, 10Y yield, 10Y inflation expectation, CPI, real GDP), plus derived YoY inflation (cpi_yoy) and an approximate inflation-adjusted real_daily_return. Low-frequency series are carried forward to every return date."
+    columns:
+      - name: date_day
+        tests: [not_null]

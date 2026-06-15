@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: stg_binance_klines
+    description: "Crypto daily OHLCV from silver, tagged asset_class = crypto."
+    columns:
+      - name: date_day
+        tests: [not_null]
+      - name: symbol
+        tests: [not_null]
+
+  - name: stg_equity_prices
+    description: "Equity daily OHLCV from silver, tagged asset_class = equity."
+    columns:
+      - name: date_day
+        tests: [not_null]
+      - name: symbol
+        tests: [not_null]
+
+  - name: stg_fred_macro
+    description: "FRED macro observations from silver, one row per series/date."
+    columns:
+      - name: date_day
+        tests: [not_null]
+      - name: series_id
+        tests: [not_null]

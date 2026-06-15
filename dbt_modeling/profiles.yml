@@ -1,0 +1,24 @@
+# Connection profile for the Athena adapter.
+# GOLD_BUCKET is account/region-specific, so it is read from the environment
+# (keeps the account id out of version control). Get it from Terraform:
+#   export GOLD_BUCKET=$(terraform -chdir=../terraform output -raw gold_bucket_name)
+# Run dbt from this directory with: dbt build --profiles-dir .
+financial_data_lakehouse:
+  target: dev
+  outputs:
+    dev:
+      type: athena
+      region_name: eu-central-1
+      database: awsdatacatalog
+      schema: financial_data_lakehouse_gold
+
+      # Where Athena stages query results (transient). Matches the workgroup's
+      # enforced output location.
+      s3_staging_dir: "s3://{{ env_var('GOLD_BUCKET') }}/athena-results/"
+
+      # Where dbt writes the actual gold table data (Parquet). Kept separate
+      # from query results so model data has its own clean prefix.
+      s3_data_dir: "s3://{{ env_var('GOLD_BUCKET') }}/dbt/"
+
+      work_group: financial-data-lakehouse
+      threads: 4

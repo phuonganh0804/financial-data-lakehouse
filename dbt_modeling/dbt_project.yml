@@ -1,0 +1,34 @@
+name: 'financial_data_lakehouse'
+version: '1.0.0'
+config-version: 2
+
+profile: 'financial_data_lakehouse'
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Silver Glue database the dbt sources read from (a dbt "schema" is a Glue
+# "database"). The target/gold database is set by the profile's `schema:`
+# (financial_data_lakehouse_gold), so every model lands there by default.
+vars:
+  silver_schema: financial_data_lakehouse_silver
+
+models:
+  financial_data_lakehouse:
+    # Staging = thin Athena views over the Iceberg silver tables (no storage).
+    staging:
+      +materialized: view
+    # Intermediate = ephemeral (inlined as CTEs; no DB object created).
+    intermediate:
+      +materialized: ephemeral
+    # Marts = Hive/Parquet tables via CTAS, rebuilt full-refresh each run.
+    # Full-refresh is correct here: the return/volatility marts use window
+    # functions that need full history. To switch gold to Iceberg (time
+    # travel, compaction, future incremental marts), add: +table_type: iceberg
+    marts:
+      +materialized: table

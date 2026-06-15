@@ -1,0 +1,14 @@
+# Classic dbt-core + the official Athena adapter.
+#
+# The Fusion engine (the global `dbt` binary) does not yet ship the Athena
+# adapter, so install these into a venv and run that venv's dbt.
+#
+# Python 3.14 needs dbt-core >= 1.12, which relaxed the mashumaro pin to
+# support 3.14 (see dbt-core issue #12098). 1.12 / dbt-athena 1.11 are
+# currently prerelease, so install with --pre:
+#   python3 -m venv .dbt-venv
+#   .dbt-venv/bin/pip install --pre -r requirements.txt
+# On Python <= 3.13 you can use the stable line instead (dbt-core 1.11 + the
+# matching dbt-athena) and drop --pre.
+dbt-core==1.12.0b2
+dbt-athena==1.11.0b1

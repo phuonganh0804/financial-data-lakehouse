@@ -1,0 +1,14 @@
+version: 2
+
+sources:
+  - name: silver
+    description: "Iceberg silver-layer tables in the Glue Data Catalog."
+    database: awsdatacatalog
+    schema: "{{ var('silver_schema') }}"
+    tables:
+      - name: binance_klines
+        description: "Crypto OHLCV klines (Binance), typed and de-duplicated."
+      - name: equity_prices
+        description: "Equity OHLCV bars (Twelve Data), typed and de-duplicated."
+      - name: fred_macro
+        description: "FRED macro observations, one row per series/date."
