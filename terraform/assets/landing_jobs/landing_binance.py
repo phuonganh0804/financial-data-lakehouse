@@ -1,3 +1,4 @@
+import json
 import sys
 import time
 import uuid
@@ -20,15 +21,16 @@ args = getResolvedOptions(sys.argv, [
     'api_start_date',
     'api_end_date',
     'interval',
+    'crypto_symbols_config_path',
 ])
 
-LANDING_BUCKET = args['landing_bucket']
-INGEST_DATE    = args['ingest_date']
-API_START_DATE = args['api_start_date']
-API_END_DATE   = args['api_end_date']   # exclusive
-INTERVAL       = args['interval']
-SYMBOLS        = ['BTCUSDT', 'ETHUSDT']
-MAX_LIMIT      = 1000
+LANDING_BUCKET             = args['landing_bucket']
+INGEST_DATE                = args['ingest_date']
+API_START_DATE             = args['api_start_date']
+API_END_DATE               = args['api_end_date']   # exclusive
+INTERVAL                   = args['interval']
+CRYPTO_SYMBOLS_CONFIG_PATH = args['crypto_symbols_config_path']
+MAX_LIMIT                  = 1000
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 
 MAX_RETRIES = 3
@@ -42,6 +44,37 @@ RUN_ID = (
 )
 
 s3 = boto3.client("s3")
+
+
+def parse_s3_uri(s3_uri: str) -> tuple:
+    if not s3_uri.startswith("s3://"):
+        raise ValueError(f"Expected S3 URI, got: {s3_uri}")
+    path = s3_uri.replace("s3://", "", 1)
+    bucket, _, key = path.partition("/")
+    if not bucket or not key:
+        raise ValueError(f"Invalid S3 URI: {s3_uri}")
+    return bucket, key
+
+
+def load_crypto_symbols(s3_uri: str) -> list:
+    """Load the crypto symbol universe from S3 — the single source of truth
+    shared with terraform (crypto_symbols.json). Externalised so the universe
+    scales by editing config, not code."""
+    bucket, key = parse_s3_uri(s3_uri)
+    config = json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
+
+    symbols = config.get("symbols")
+    if not isinstance(symbols, list) or not symbols:
+        raise ValueError("Crypto config field 'symbols' must be a non-empty list")
+    if not all(isinstance(s, str) for s in symbols):
+        raise ValueError("All symbols must be strings")
+    if len(symbols) != len(set(symbols)):
+        raise ValueError("Crypto config contains duplicate symbols")
+    return symbols
+
+
+# Single source of truth, shared with terraform (crypto_symbols.json).
+SYMBOLS = load_crypto_symbols(CRYPTO_SYMBOLS_CONFIG_PATH)
 
 
 def to_epoch_ms(date_str: str) -> int:

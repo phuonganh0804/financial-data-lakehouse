@@ -58,6 +58,11 @@ variable "macro_series_config_path" {
   type        = string
 }
 
+variable "crypto_symbols_config_path" {
+  description = "S3 URI to crypto symbol JSON config (Binance universe)"
+  type        = string
+}
+
 variable "landing_jobs" {
   description = "Map of landing (Python Shell) jobs to create"
   type = map(object({

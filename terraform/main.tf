@@ -56,19 +56,20 @@ locals {
 module "landing_job" {
   source = "./modules/landing_job"
 
-  project_name             = var.project_name
-  environment              = var.environment
-  landing_bucket_name      = aws_s3_bucket.landing.id
-  landing_bucket_arn       = aws_s3_bucket.landing.arn
-  scripts_bucket_name      = aws_s3_bucket.scripts.id
-  scripts_bucket_arn       = aws_s3_bucket.scripts.arn
-  ingest_date              = var.ingest_date
-  api_start_date           = var.api_start_date
-  api_end_date             = var.api_end_date
-  interval                 = var.interval
-  ticker_config_path       = "s3://${aws_s3_bucket.scripts.id}/config/equity_tickers.json"
-  macro_series_config_path = "s3://${aws_s3_bucket.scripts.id}/config/macro_series.json"
-  landing_jobs             = local.landing_jobs
+  project_name               = var.project_name
+  environment                = var.environment
+  landing_bucket_name        = aws_s3_bucket.landing.id
+  landing_bucket_arn         = aws_s3_bucket.landing.arn
+  scripts_bucket_name        = aws_s3_bucket.scripts.id
+  scripts_bucket_arn         = aws_s3_bucket.scripts.arn
+  ingest_date                = var.ingest_date
+  api_start_date             = var.api_start_date
+  api_end_date               = var.api_end_date
+  interval                   = var.interval
+  ticker_config_path         = "s3://${aws_s3_bucket.scripts.id}/config/equity_tickers.json"
+  macro_series_config_path   = "s3://${aws_s3_bucket.scripts.id}/config/macro_series.json"
+  crypto_symbols_config_path = "s3://${aws_s3_bucket.scripts.id}/config/crypto_symbols.json"
+  landing_jobs               = local.landing_jobs
 }
 
 module "bronze_job" {
@@ -127,6 +128,20 @@ resource "aws_s3_object" "macro_series_config" {
   key    = "config/macro_series.json"
   source = "${path.module}/macro_series.json"
   etag   = filemd5("${path.module}/macro_series.json")
+
+  tags = {
+    Project     = var.project_name
+    Environment = var.environment
+  }
+}
+
+# Crypto symbol universe — read by the Binance landing job so the universe
+# scales by editing config, not code. Also the source the dbt coverage seed is generated from.
+resource "aws_s3_object" "crypto_symbols_config" {
+  bucket = aws_s3_bucket.scripts.id
+  key    = "config/crypto_symbols.json"
+  source = "${path.module}/crypto_symbols.json"
+  etag   = filemd5("${path.module}/crypto_symbols.json")
 
   tags = {
     Project     = var.project_name
