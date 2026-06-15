@@ -1,0 +1,98 @@
+# Local Airflow (LocalExecutor) for the financial-data-lakehouse pipeline.
+#
+# Airflow only ORCHESTRATES — no heavy compute here:
+#   - GlueJobOperator / GlueDataQualityRuleSetEvaluationRunOperator use boto3
+#     (the mounted ~/.aws creds) to trigger AWS Glue.
+#   - the dbt step is a DockerOperator that launches a separate dbt container
+#     via the mounted docker socket (keeps dbt's prerelease deps out of Airflow).
+#
+# Setup:
+#   1. cp .env.example .env   and fill it in (values from `terraform output`)
+#   2. docker build -t financial-data-lakehouse-dbt ../dbt_modeling   (next file)
+#   3. mkdir -p logs plugins
+#   4. docker compose up airflow-init   then   docker compose up
+#   UI: http://localhost:8080  (admin / admin)
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.10.4
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    # Shared across webserver+scheduler so log-fetch signatures match and
+    # encrypted values survive restarts. Override via .env for anything non-local.
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-changeme-local}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+    _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-amazon apache-airflow-providers-docker pandas-market-calendars"
+    # AWS for boto3 (Glue + DQ operators run inside Airflow)
+    AWS_DEFAULT_REGION: ${AWS_REGION:-eu-central-1}
+    AWS_REGION: ${AWS_REGION:-eu-central-1}
+    # consumed by the DAG (kept out of git via .env)
+    GOLD_BUCKET: ${GOLD_BUCKET}
+    GLUE_ROLE_ARN: ${GLUE_ROLE_ARN}
+    # HOST paths the dbt DockerOperator bind-mounts into the dbt container
+    DBT_PROJECT_DIR: ${DBT_PROJECT_DIR}
+    AWS_CREDS_DIR: ${AWS_CREDS_DIR}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ${AWS_CREDS_DIR}:/home/airflow/.aws:ro       # boto3 creds for Glue/DQ
+    - /var/run/docker.sock:/var/run/docker.sock     # DockerOperator (dbt)
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+    restart: always
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username admin --password admin \
+          --firstname admin --lastname admin \
+          --role Admin --email admin@example.com
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-db-volume:

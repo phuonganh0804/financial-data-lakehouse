@@ -1,0 +1,6 @@
+# Created by Airflow at runtime (owned by AIRFLOW_UID, not source)
+logs/
+plugins/
+
+# Local secrets (account id / ARNs) — see .env.example
+.env
