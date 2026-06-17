@@ -1,0 +1,32 @@
+macros:
+  - name: assert_entity_coverage
+    description: Coverage check if each expected entity exists in the model
+    arguments:
+      - name: source_name
+        type: string
+        description: Source key to filter the expected_entities seed (e.g. crypto, equity, fred)
+      - name: model
+        type: relation
+        description: Staging model whose distinct entities are compared against the expected set
+      - name: entity_col
+        type: string
+        description: Column holding the entity id (symbol/series_id) to check
+  - name: assert_entity_recency
+    description: Recency check that each present entity's newest row is within max_age_days
+    arguments:
+      - name: model
+        type: relation
+        description: Staging model to check per-entity recency on
+      - name: entity_col
+        type: string
+        description: Column holding the entity id (symbol/series_id), grouped to one row each
+      - name: max_age_days
+        type: integer or SQL expression
+        description: Max allowed age in days; an int literal (e.g. 3) or a SQL expression over the grouped columns (e.g. a CASE on frequency)
+      - name: date_col
+        type: string
+        description: Name of the date column to measure age from. Optional, defaults to 'date_day'
+      - name: extra_cols
+        type: list
+        description: Columns carried through the group-by so a SQL-expression max_age_days can reference them (e.g. ['frequency']). Optional, defaults to []
+  
