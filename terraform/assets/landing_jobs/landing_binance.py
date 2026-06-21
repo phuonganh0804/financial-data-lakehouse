@@ -57,8 +57,7 @@ def parse_s3_uri(s3_uri: str) -> tuple:
 
 
 def load_crypto_symbols(s3_uri: str) -> list:
-    """Load the crypto symbol universe from S3 — the single source of truth
-    shared with terraform (crypto_symbols.json). Externalised so the universe
+    """Load the crypto symbol universe from S3. Externalised so the universe
     scales by editing config, not code."""
     bucket, key = parse_s3_uri(s3_uri)
     config = json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
@@ -108,7 +107,12 @@ def fetch_page(
                     f"{response.text[:200]}"
                 )
 
-            response.raise_for_status()
+            if response.status_code >= 400:
+                raise ValueError(
+                    f"non-retryable HTTP {response.status_code}: "
+                    f"{response.text[:200]}"
+                )
+
             return response
 
         except (RuntimeError, requests.exceptions.RequestException) as e:

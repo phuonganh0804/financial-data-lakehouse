@@ -8,7 +8,7 @@ import boto3
 import requests
 from awsglue.utils import getResolvedOptions
 
-# Glue Python Shell job — pure ingestion, no Spark.
+# Glue Python Shell job — pure ingestion.
 # Stores the full FRED observations response BYTE-FOR-BYTE in the immutable
 # landing zone: one file per series, exactly as returned (including "."
 # missing markers and the response envelope). Nothing is projected or cast
@@ -69,7 +69,7 @@ def load_macro_series(s3_uri: str) -> dict:
     shared with the bronze job. Drives the fetch loop and enriches the failure
     audit; never injected into the raw landing payloads."""
     bucket, key = parse_s3_uri(s3_uri)
-    body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+    body = s3.get_object(Bucket=bucket, Key=key)["Body"].read() # json formatted bytes
     series = json.loads(body).get("series", [])
     if not series:
         raise ValueError(f"Macro series config is empty: {s3_uri}")
@@ -81,10 +81,6 @@ def load_macro_series(s3_uri: str) -> dict:
         }
         for item in series
     }
-
-
-# Single source of truth, shared with the bronze job (see macro_series.json).
-MACRO_SERIES = load_macro_series(MACRO_SERIES_CONFIG_PATH)
 
 
 def put_raw(bucket: str, key: str, raw_text: str) -> None:
@@ -107,7 +103,10 @@ def put_jsonl(bucket: str, key: str, records: list) -> None:
 
 
 def get_api_key(parameter_name: str) -> str:
-    ssm = boto3.client('ssm', region_name='eu-central-1')
+    # No explicit region — resolve it from the environment (AWS_REGION /
+    # AWS_DEFAULT_REGION) like the module-level S3 client, so both follow the
+    # job's region instead of being pinned to eu-central-1.
+    ssm = boto3.client('ssm')
     return ssm.get_parameter(
         Name=parameter_name,
         WithDecryption=True
@@ -132,11 +131,15 @@ DEFAULT_WINDOW_DAYS = 90
 
 
 def observation_start(frequency: str) -> str:
-    """Lookback start for a series, sized to its frequency. Anchored to the
-    run's API_END_DATE so it moves with the schedule (and with backfills)."""
+    """Lookback start for a series: a frequency-sized window back from
+    API_END_DATE, but never later than API_START_DATE. In incremental runs
+    API_START_DATE (= ds) is later than the window, so the cadence window wins
+    (behaviour unchanged); in a bulk backfill API_START_DATE is set far back, so
+    it wins and the full history is fetched. min() picks the earlier date."""
     days = WINDOW_DAYS.get(frequency, DEFAULT_WINDOW_DAYS)
-    end = datetime.fromisoformat(API_END_DATE)
-    return (end - timedelta(days=days)).date().isoformat()
+    window_start = (datetime.fromisoformat(API_END_DATE) - timedelta(days=days)).date()
+    api_start = datetime.fromisoformat(API_START_DATE).date()
+    return min(api_start, window_start).isoformat()
 
 
 def fetch_series(
@@ -167,7 +170,15 @@ def fetch_series(
                     f"{response.text[:200]}"
                 )
 
-            response.raise_for_status()
+            # Any other 4xx/5xx is permanent (bad series_id, bad/expired key,
+            # 404, etc.) — retrying won't help, so fail immediately instead of
+            # burning all MAX_RETRIES with backoff. Raised as ValueError so it
+            # bypasses the retry `except` below (same path as an empty series).
+            if response.status_code >= 400:
+                raise ValueError(
+                    f"non-retryable HTTP {response.status_code}: "
+                    f"{response.text[:200]}"
+                )
 
             # No observations across the whole lookback window = a real miss
             # (series discontinued, or FRED down); "." rows still count as a
@@ -209,11 +220,11 @@ def land_series(response: requests.Response, series_id: str) -> None:
     print(f"{series_id}: raw response landed -> s3://{LANDING_BUCKET}/{key}")
 
 
-def land_all(api_key: str) -> list:
+def land_all(api_key: str, macro_series: dict) -> list:
     failed = []
 
     with requests.Session() as session:
-        for series_id, meta in MACRO_SERIES.items():
+        for series_id, meta in macro_series.items():
             try:
                 response = fetch_series(session, series_id, api_key, meta["frequency"])
                 land_series(response, series_id)
@@ -233,14 +244,14 @@ def write_failed_audit(failed: list) -> None:
     # so it stays in the record; ingest_date / run_id live in the path.
     audit_records = [
         {
-            "series_id":      series_id,
-            "series_name":    meta["name"],
-            "frequency":      meta["frequency"],
-            "unit":           meta["unit"],
-            "reason":         reason,
-            "api_start_date": API_START_DATE,
-            "api_end_date":   API_END_DATE,
-            "audited_at":     datetime.now(timezone.utc).isoformat(),
+            "series_id":         series_id,
+            "series_name":       meta["name"],
+            "frequency":         meta["frequency"],
+            "unit":              meta["unit"],
+            "reason":            reason,
+            "observation_start": observation_start(meta["frequency"]),
+            "observation_end":   API_END_DATE,
+            "audited_at":        datetime.now(timezone.utc).isoformat(),
         }
         for series_id, meta, reason in failed
     ]
@@ -258,16 +269,37 @@ def write_failed_audit(failed: list) -> None:
 
 def main() -> None:
     print("Starting FRED macro landing")
-    print(f"Date range:  {API_START_DATE} -> {API_END_DATE}")
     print(f"Ingest date: {INGEST_DATE}")
     print(f"Run id:      {RUN_ID}")
-    print(f"Series:      {len(MACRO_SERIES)}")
+
+    # Load the series config here (not at module import) so a bad/missing config
+    # fails inside the job with this logging context, not as an import error.
+    macro_series = load_macro_series(MACRO_SERIES_CONFIG_PATH)
+    print(f"Series:      {len(macro_series)}")
+    print(f"Observation end: {API_END_DATE}") 
+    for freq in sorted({m["frequency"] for m in macro_series.values()}):
+        print(f"  {freq} window: {observation_start(freq)} -> {API_END_DATE}")
     print(f"Max failed series allowed: {MAX_FAILED_SERIES}")
+
+    # Fail loud if any series has a frequency not in WINDOW_DAYS: otherwise
+    # observation_start() would silently fall back to DEFAULT_WINDOW_DAYS, which
+    # for a GDP-class series is far too short and would land it empty.
+    unknown = {
+        sid: m["frequency"]
+        for sid, m in macro_series.items()
+        if m["frequency"] not in WINDOW_DAYS
+    }
+    if unknown:
+        raise ValueError(
+            f"Series with frequency not in WINDOW_DAYS {sorted(WINDOW_DAYS)}: "
+            f"{unknown}. Add the frequency to WINDOW_DAYS so it isn't silently "
+            f"given the {DEFAULT_WINDOW_DAYS}-day default."
+        )
 
     api_key = get_api_key(SSM_PARAMETER)
     print("API key retrieved from SSM")
 
-    failed = land_all(api_key)
+    failed = land_all(api_key, macro_series)
 
     write_failed_audit(failed)
 
@@ -278,12 +310,12 @@ def main() -> None:
 
     if len(failed) > MAX_FAILED_SERIES:
         raise RuntimeError(
-            f"{len(failed)}/{len(MACRO_SERIES)} FRED series failed — "
+            f"{len(failed)}/{len(macro_series)} FRED series failed — "
             f"aborting to prevent incomplete macro data. "
             f"Failed: {[s for s, _, _ in failed]}"
         )
 
-    print(f"\nLanded {len(MACRO_SERIES) - len(failed)}/{len(MACRO_SERIES)} series")
+    print(f"\nLanded {len(macro_series) - len(failed)}/{len(macro_series)} series")
     print("FRED macro landing complete")
 
 
