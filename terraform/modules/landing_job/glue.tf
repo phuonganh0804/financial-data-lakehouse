@@ -15,13 +15,13 @@ resource "aws_glue_job" "landing_jobs" {
   }
 
   default_arguments = {
-    "--job-language"              = "python"
-    "--additional-python-modules" = "requests"
-    "--landing_bucket"            = var.landing_bucket_name
-    "--ingest_date"               = var.ingest_date
-    "--api_start_date"            = var.api_start_date
-    "--api_end_date"              = var.api_end_date
-    "--interval"                  = var.interval
+    "--job-language"               = "python"
+    "--additional-python-modules"  = "requests"
+    "--landing_bucket"             = var.landing_bucket_name
+    "--ingest_date"                = var.ingest_date
+    "--api_start_date"             = var.api_start_date
+    "--api_end_date"               = var.api_end_date
+    "--interval"                   = var.interval
     "--ticker_config_path"         = var.ticker_config_path
     "--macro_series_config_path"   = var.macro_series_config_path
     "--crypto_symbols_config_path" = var.crypto_symbols_config_path
