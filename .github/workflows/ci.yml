@@ -1,0 +1,75 @@
+name: ci
+
+# Static checks only — no AWS credentials needed, so they run on every push/PR
+# in seconds. Integration (terraform plan, dbt build against Athena) needs AWS
+# and is intentionally left out; wire it later via GitHub OIDC if you want it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    name: python (lint + syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install ruff
+      # Conservative rule set: real errors only (syntax, undefined names) — no
+      # style noise. Tighten to a full `ruff check` once the code is lint-clean.
+      - name: Run ruff (real-error rules)
+        run: ruff check --select E9,F63,F7,F82 terraform/assets scripts airflow/dags
+      # py_compile is import-free, so it validates syntax without awsglue/airflow installed.
+      - name: py_compile (syntax)
+        run: find terraform/assets scripts airflow/dags -name '*.py' -print0 | xargs -0 -n1 python -m py_compile
+
+  seed-drift:
+    name: expected_entities seed up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      # Regenerate the dbt coverage seed from the terraform universe configs and
+      # fail if it differs from what's committed — catches "edited a config but
+      # forgot to regenerate the seed" drift.
+      - run: python scripts/gen_expected_entities.py
+      - name: fail if seed drifted from configs
+        run: git diff --exit-code dbt_modeling/seeds/expected_entities.csv
+
+  terraform:
+    name: terraform (fmt + validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+      - name: fmt
+        run: terraform -chdir=terraform fmt -check -recursive
+      # -backend=false skips S3 backend init, so validate runs with no AWS creds.
+      - name: validate
+        run: |
+          terraform -chdir=terraform init -backend=false
+          terraform -chdir=terraform validate
+
+  dbt:
+    name: dbt (parse)
+    runs-on: ubuntu-latest
+    env:
+      GOLD_BUCKET: placeholder   # the only env_var() in profiles.yml; parse never connects, so any string works
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: install dbt (prerelease athena adapter)
+        run: pip install --pre -r dbt_modeling/requirements.txt
+      # Validate against the REAL committed profile (its only secret, GOLD_BUCKET,
+      # is faked above). `dbt parse` builds the manifest without connecting — this
+      # is what would have caught the null-description error in _macros_docs.yml.
+      - run: dbt deps --project-dir dbt_modeling --profiles-dir dbt_modeling
+      - run: dbt parse --project-dir dbt_modeling --profiles-dir dbt_modeling
