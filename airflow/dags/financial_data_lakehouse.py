@@ -5,9 +5,9 @@ Per source:  landing -> bronze -> transform(silver) -> data quality
 Once every DQ check passes:  dbt build (gold star schema + tests)
 
 The Glue jobs and DQ rulesets are created by Terraform; this DAG only *triggers*
-them and passes ingest_date / api dates at runtime ({{ ds }}) — which is what
-makes backfills work (airflow dags backfill ...) and removes the Terraform-baked
-dates. Heavy compute runs in AWS; Airflow is just the orchestrator.
+them and passes ingest_date / api dates at runtime ({{ data_interval_start | ds }})
+— which is what makes backfills work (airflow dags backfill ...) and removes the
+Terraform-baked dates. Heavy compute runs in AWS; Airflow is just the orchestrator.
 """
 import os
 from datetime import datetime, timedelta
@@ -42,9 +42,9 @@ Per source: `landing → bronze → transform (silver) → data quality`.
 Once **every** source's DQ check passes: `dbt build` (gold star schema + tests).
 
 The Glue jobs and DQ rulesets are created by **Terraform**; this DAG only
-*triggers* them and injects `ingest_date` / API dates at runtime (`{{ ds }}`),
-which is what makes backfills work. Heavy compute runs in AWS — Airflow only
-orchestrates.
+*triggers* them and injects `ingest_date` / API dates at runtime
+(`{{ data_interval_start | ds }}`), which is what makes backfills work. Heavy
+compute runs in AWS — Airflow only orchestrates.
 
 **Where to look when something fails**
 - Red task → open its **Logs** for the Glue JobRunId / DQ rule results / dbt output.
@@ -72,11 +72,17 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
-# Runtime args shared by landing + bronze. api_end_date is exclusive -> next day.
+# Runtime args shared by landing + bronze. We template on the data interval, NOT
+# {{ ds }}: for scheduled runs they're identical (logical_date == data_interval_start),
+# but for MANUAL runs {{ ds }} is the trigger instant while data_interval_start is the
+# last complete schedule window. Using the interval makes a manual trigger fetch the
+# last finished day (never a not-yet-traded "today"), keeps the UI's data_interval
+# truthful, and leaves scheduled-run behaviour byte-for-byte unchanged.
+# api_end_date is exclusive, and data_interval_end == data_interval_start + 1 day.
 DATE_ARGS = {
-    "--ingest_date": "{{ ds }}",
-    "--api_start_date": "{{ ds }}",
-    "--api_end_date": "{{ macros.ds_add(ds, 1) }}",
+    "--ingest_date": "{{ data_interval_start | ds }}",
+    "--api_start_date": "{{ data_interval_start | ds }}",
+    "--api_end_date": "{{ data_interval_end | ds }}",
 }
 
 
@@ -163,7 +169,7 @@ def financial_data_lakehouse():
         transform = glue_job(
             f"transform_{source}",
             f"{PROJECT}-transform-{source}",
-            {"--ingest_date": "{{ ds }}"},
+            {"--ingest_date": "{{ data_interval_start | ds }}"},
         )
         dq = GlueDataQualityRuleSetEvaluationRunOperator(
             task_id=f"dq_{source}",
@@ -185,7 +191,7 @@ def financial_data_lakehouse():
             gate = ShortCircuitOperator(
                 task_id=f"session_gate_{source}",
                 python_callable=is_trading_session,
-                op_args=[cfg["calendar"], "{{ ds }}"],
+                op_args=[cfg["calendar"], "{{ data_interval_start | ds }}"],
                 ignore_downstream_trigger_rules=False,
             )
             start >> gate >> landing
