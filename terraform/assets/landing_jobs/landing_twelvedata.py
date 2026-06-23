@@ -33,8 +33,24 @@ TICKER_CONFIG_PATH = args["ticker_config_path"]
 SSM_PARAMETER = "/financial-data-lakehouse/twelvedata-api-key"
 TWELVEDATA_URL = "https://api.twelvedata.com/time_series"
 
-INTERVAL_MAP = {"1d": "1day", "1w": "1week", "1mo": "1month"}
+# Canonical interval tokens are binance-native (1d/1w/1M), so the binance job
+# passes them raw; Twelve Data spells them differently, so translate here.
+# Binance is case-sensitive: "1M" is month, "1m" is minute — keep the case.
+INTERVAL_MAP = {"1d": "1day", "1w": "1week", "1M": "1month"}
 INTERVAL = INTERVAL_MAP.get(args["interval"], args["interval"])
+
+# Fail loud here if the mapped interval isn't one Twelve Data accepts. Otherwise
+# an unsupported token reaches the API and comes back as one HTTP 400 per symbol
+# — i.e. a confusing "100% failure rate" abort instead of a clear config error.
+TWELVEDATA_INTERVALS = {
+    "1min", "5min", "15min", "30min", "45min",
+    "1h", "2h", "4h", "8h", "1day", "1week", "1month",
+}
+if INTERVAL not in TWELVEDATA_INTERVALS:
+    raise ValueError(
+        f"interval '{args['interval']}' -> '{INTERVAL}' is not supported by "
+        f"Twelve Data. Supported (after mapping): {sorted(TWELVEDATA_INTERVALS)}."
+    )
 
 MAX_RETRIES = 3
 REQUEST_DELAY = 8
@@ -91,21 +107,20 @@ def load_ticker_config(s3_uri: str) -> dict:
     body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
     config = json.loads(body)
 
-    required = ["market", "exchange", "symbols"]
-    missing = [field for field in required if not config.get(field)]
-    if missing:
-        raise ValueError(f"Ticker config missing required fields: {missing}")
+    # market/exchange are twelvedata-specific (it's a multi-exchange aggregator;
+    # binance has neither). symbols is validated separately below.
+    for field in ("market", "exchange"):
+        if not config.get(field):
+            raise ValueError(f"Ticker config missing required field: {field}")
 
-    if not isinstance(config["symbols"], list):
-        raise ValueError("Ticker config field 'symbols' must be a list")
-
-    if not config["symbols"]:
-        raise ValueError("Ticker config field 'symbols' must be non-empty")
-
-    if not all(isinstance(symbol, str) for symbol in config["symbols"]):
+    # Same shape as landing_binance's symbol validation (kept in sync by hand —
+    # standalone Glue scripts can't share a helper without packaging py-files).
+    symbols = config.get("symbols")
+    if not isinstance(symbols, list) or not symbols:
+        raise ValueError("Ticker config field 'symbols' must be a non-empty list")
+    if not all(isinstance(symbol, str) for symbol in symbols):
         raise ValueError("All symbols must be strings")
-
-    if len(config["symbols"]) != len(set(config["symbols"])):
+    if len(symbols) != len(set(symbols)):
         raise ValueError("Ticker config contains duplicate symbols")
     return config
 
