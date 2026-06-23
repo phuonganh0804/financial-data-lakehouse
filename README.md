@@ -33,6 +33,11 @@ flowchart LR
 | **Orchestration** | Airflow | Daily `landing → bronze → silver → DQ → dbt` per source |
 | **IaC** | Terraform | All AWS resources **and** the Glue job scripts |
 
+The Airflow DAG that runs it — one branch per source, with trading-calendar
+**session gates** up front and a **Glue DQ → `dbt build`** gate before gold:
+
+![Airflow DAG: per-source landing → bronze → silver → data quality → dbt build, gated by trading-calendar session checks and Glue Data Quality](docs/images/airflow_dag.png)
+
 ## Data model (gold)
 
 dbt builds a **star schema** in Athena (`financial_data_lakehouse_gold`):
