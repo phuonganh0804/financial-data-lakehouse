@@ -7,6 +7,10 @@ A medallion-architecture data lakehouse for financial market data on AWS. Crypto
 `landing → bronze → silver → data quality → dbt gold`, orchestrated by Airflow and
 provisioned with Terraform.
 
+## Purpose
+
+Financial analysts and quantitative researchers often spend significant effort collecting and reconciling market and macroeconomic data. This platform automates ingestion, validation, and transformation into analytics-ready datasets for risk analysis and quantitative research.
+
 ## Architecture
 
 ```mermaid
@@ -169,7 +173,7 @@ Quality is enforced at three levels — pre-merge, runtime, and analytics:
 
 - **Twelve Data landing is intentionally not paginated.** The `time_series`
   endpoint caps each response at `outputsize` (max **5000 rows**, not a time span).
-  Daily backfills here are scoped to recent history — well under the cap — so a
+  Daily backfills here are scoped to recent history, which is well under the cap, so a
   single request is complete. Pagination is deliberately skipped: it would be
   untestable against the free tier's limited history depth, and `landing_binance.py`
   (a hard 1000-rows/request cap) already demonstrates the paging pattern. To go
