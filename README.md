@@ -74,10 +74,9 @@ order by asset_class;
 
 | asset_class | obs | avg_daily_return_pct | avg_real_return_pct | avg_30d_vol_pct | avg_fed_funds | avg_cpi_yoy_pct |
 |---|---|---|---|---|---|---|
-| crypto | 730 | 0.18 | 0.17 | 3.45 | 4.33 | 2.9 |
-| equity | 2016 | 0.06 | 0.05 | 1.12 | 4.33 | 2.9 |
+| crypto | 730 | 0.025 | 0.0177 | 3.0 | 4.21 | 2.69 |
+| equity | 2000 | 0.0859 | 0.0786 | 2.29 | 4.21 | 2.69 |
 
-> _Output above is **illustrative** — replace with your real query result (or a screenshot of the Athena console)._
 
 ## Setup
 
