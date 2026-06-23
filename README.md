@@ -31,7 +31,7 @@ flowchart LR
 |---|---|---|
 | **Landing** | Glue Python Shell | Raw API responses, byte-for-byte, immutable (append-only by `run_id`) |
 | **Bronze** | Glue Spark | Parsed/structured to columnar Parquet, partitioned by `ingest_date` |
-| **Silver** | Glue Spark + Iceberg | Typed, deduped, `MERGE`d on natural keys `(entity, date)` |
+| **Silver** | Glue Spark + Iceberg | Typed, deduped, `MERGE` on natural keys `(entity, date)` |
 | **Data quality** | Glue Data Quality (DQDL) | Row-level rules that gate the gold build |
 | **Gold** | dbt-athena | Star-schema marts (e.g. returns vs. macro) |
 | **Orchestration** | Airflow | Daily `landing → bronze → silver → DQ → dbt` per source |
