@@ -46,9 +46,9 @@ The Airflow DAG that runs it — one branch per source, with trading-calendar
 
 dbt builds a **star schema** in Athena (`financial_data_lakehouse_gold`):
 
-- **Dimensions** — `dim_date` (calendar), `dim_symbol` (`(exchange, symbol)` → `symbol_key`, `asset_class ∈ {crypto, equity}`), `dim_series` (FRED series reference: name, frequency, unit).
-- **Facts** — `fct_daily_prices` (OHLCV, one instrument/day), `fct_returns` (daily & log returns + 30-day rolling volatility), `fct_macro` (one FRED series/day). Each fact carries a surrogate key and `relationships` (foreign-key) tests back to its dimensions.
-- **Report mart** — `mart_returns_vs_macro`: every asset's daily return aligned with **forward-filled** daily macro (fed funds, 10Y yield, 10Y inflation expectation, CPI, real GDP), plus a derived YoY inflation (`cpi_yoy`) and an approximate inflation-adjusted `real_daily_return`. Monthly CPI and quarterly GDP are carried forward to every trading day so low-frequency macro lines up with daily returns.
+- **Dimensions** - `dim_date` (calendar), `dim_symbol` (`(exchange, symbol)` → `symbol_key`, `asset_class ∈ {crypto, equity}`), `dim_series` (FRED series reference: name, frequency, unit).
+- **Facts** - `fct_daily_prices` (OHLCV, one instrument/day), `fct_returns` (daily & log returns + 30-day rolling volatility), `fct_macro` (one FRED series/day). Each fact carries a surrogate key and `relationships` (foreign-key) tests back to its dimensions.
+- **Report mart** - `mart_returns_vs_macro`: every asset's daily return aligned with **forward-filled** daily macro (fed funds, 10Y yield, 10Y inflation expectation, CPI, real GDP), plus a derived YoY inflation (`cpi_yoy`) and an approximate inflation-adjusted `real_daily_return`. Monthly CPI and quarterly GDP are carried forward to every trading day so low-frequency macro lines up with daily returns.
 
 ```mermaid
 flowchart LR
@@ -92,9 +92,9 @@ order by asset_class;
 ### Prerequisites
 - AWS credentials with permission to create Glue, S3, Athena, Glue Data Catalog, IAM, and SSM resources.
 - Terraform, Docker (for Airflow + dbt), AWS CLI.
-- Config files are gitignored (account/run-specific) — copy each from its committed `.example`: `terraform/backend.hcl` (S3 state backend), `terraform/terraform.tfvars` (run dates + interval), and `airflow/.env` (Terraform outputs).
+- Config files are gitignored (account/run-specific) - copy each from its committed `.example`: `terraform/backend.hcl` (S3 state backend), `terraform/terraform.tfvars` (run dates + interval), and `airflow/.env` (Terraform outputs).
 
-Store the FRED API key in SSM (read at runtime by the landing job — never committed):
+Store the FRED API key in SSM (read at runtime by the landing job - never committed):
 ```bash
 aws ssm put-parameter \
   --name /financial-data-lakehouse/fred-api-key \
@@ -142,14 +142,14 @@ The containers authenticate to AWS via your host's `~/.aws` credentials
 
 ## History vs. incremental
 
-Two distinct mechanisms keep the lakehouse current — and they never conflict,
+Two distinct mechanisms keep the lakehouse current, and they never conflict,
 because silver `MERGE`s on natural keys (both paths converge to one row per
 entity/date):
 
-- **Incremental (ongoing)** — the Airflow DAG, daily. Each run fetches a single
+- **Incremental (ongoing)** - the Airflow DAG, daily. Each run fetches a single
   `ds` (crypto/equities) or a cadence-sized **lookback window** (FRED, so the
   latest late-released observation is always captured). This is the steady state.
-- **Backfill (history)** — `scripts/backfill.sh`, on demand. Fetches a wide
+- **Backfill (history)** - `scripts/backfill.sh`, on demand. Fetches a wide
   `[api_start_date, api_end_date]` range in one shot. The whole range lands under
   one `ingest_date` batch; the real time axis is each row's `date` column.
 
@@ -159,7 +159,7 @@ data to fetch.
 
 ## Quality & testing
 
-Quality is enforced at three levels — pre-merge, runtime, and analytics:
+Quality is enforced at three levels - pre-merge, runtime, and analytics:
 
 1. **CI — static checks on every push/PR** (`.github/workflows/ci.yml`, credential-free, no AWS needed):
    - `ruff` (real-error rules) + `py_compile` across all Glue/Airflow Python;
