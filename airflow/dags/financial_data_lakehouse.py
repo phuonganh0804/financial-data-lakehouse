@@ -1,14 +1,12 @@
 """
 financial_data_lakehouse — daily medallion pipeline.
 
-Per source:  landing -> bronze -> transform(silver) -> data quality
-Once every DQ check passes:  dbt build (gold star schema + tests)
-
-The Glue jobs and DQ rulesets are created by Terraform; this DAG only *triggers*
-them and passes ingest_date / api dates at runtime ({{ data_interval_start | ds }})
-— which is what makes backfills work (airflow dags backfill ...) and removes the
-Terraform-baked dates. Heavy compute runs in AWS; Airflow is just the orchestrator.
+Orchestration only: the Glue jobs and DQ rulesets live in Terraform; this DAG
+just triggers them per source (landing → bronze → silver → DQ → dbt gold).
+Full operational docs (incl. runtime dates, backfills, where to look on
+failure) render in the Airflow UI — see DOC_MD below.
 """
+
 import os
 from datetime import datetime, timedelta
 
