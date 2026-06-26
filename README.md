@@ -37,7 +37,7 @@ flowchart LR
 | **Orchestration** | Airflow | Daily `landing → bronze → silver → DQ → dbt` per source |
 | **IaC** | Terraform | All AWS resources **and** the Glue job scripts |
 
-The Airflow DAG that runs it — one branch per source, with trading-calendar
+The Airflow DAG that runs it - one branch per source, with trading-calendar
 **session gates** up front and a **Glue DQ → `dbt build`** gate before gold:
 
 ![Airflow DAG: per-source landing → bronze → silver → data quality → dbt build, gated by trading-calendar session checks and Glue Data Quality](docs/images/airflow_dag.png)
@@ -113,11 +113,11 @@ terraform apply
 ```
 Creates the Glue jobs, S3 buckets, Iceberg catalog, DQ rulesets, and Athena
 workgroup, and uploads the job scripts. **All job IAM roles and policies are
-provisioned here — no manual IAM setup.**
+provisioned here - no manual IAM setup.**
 
 ### 2. Backfill history (optional, one-off)
 Airflow runs with `catchup=False`, so it only ingests **forward from now**. To load
-history — a fresh deploy, or a newly added series/symbol — run the bulk backfill
+history - a fresh deploy, or a newly added series/symbol - run the bulk backfill
 (landing → bronze → transform per source over a wide date range, **outside**
 Airflow):
 ```bash
@@ -161,13 +161,22 @@ data to fetch.
 
 Quality is enforced at three levels - pre-merge, runtime, and analytics:
 
-1. **CI — static checks on every push/PR** (`.github/workflows/ci.yml`, credential-free, no AWS needed):
+1. **CI - static checks on every push/PR** (`.github/workflows/ci.yml`, credential-free, no AWS needed):
    - `ruff` (real-error rules) + `py_compile` across all Glue/Airflow Python;
    - **seed-drift** — regenerates the dbt coverage seed from the Terraform configs and fails if it diverges from what's committed;
    - `terraform fmt -check` + `validate` (`-backend=false`);
-   - `dbt parse` against the committed profile — builds the manifest and catches model/macro/schema errors offline.
-2. **Glue Data Quality — runtime row rules that gate the gold build.** Each silver table has a DQDL ruleset (`binance_dq_ruleset`, `twelvedata_dq_ruleset`, `fred_dq_ruleset`) asserting `RowCount > 0`, completeness (`IsComplete` on keys/OHLCV), and validity (`ColumnValues "close" > 0`, `volume >= 0`). The DAG runs these after silver and **only triggers `dbt build` if every source's checks pass** — bad data never reaches gold.
-3. **dbt tests — the analytics contract.** Schema tests on the marts: `not_null`/`unique` on surrogate keys, `relationships` (foreign-key integrity from every fact back to its dimensions), and `accepted_values` on `asset_class`. Run as part of `dbt build`.
+   - `dbt parse` against the committed profile - builds the manifest and catches model/macro/schema errors offline.
+2. **Glue Data Quality - runtime row rules that gate the gold build.** Each silver table has a DQDL ruleset (`binance_dq_ruleset`, `twelvedata_dq_ruleset`, `fred_dq_ruleset`) asserting `RowCount > 0`, completeness (`IsComplete` on keys/OHLCV), and validity (`ColumnValues "close" > 0`, `volume >= 0`). The DAG runs these after silver and **only triggers `dbt build` if every source's checks pass** - bad data never reaches gold.
+3. **dbt — the analytics layer.** A schema contract (`not_null`/`unique` on surrogate keys, `relationships` foreign-key integrity from every fact to its dimensions, `accepted_values` on `asset_class`) **plus source freshness and custom recency & coverage assertions** — all run in `dbt build`.
+
+**Why four data-quality checks?** They aren't a list — they're a **closed loop**, where each one covers the blind spot of the one before it:
+
+- **Validity** (Glue DQ) — the rows present are correct → *but maybe nothing fresh landed.*
+- **Freshness** (dbt source freshness) — something landed recently → *but maybe one entity silently stalled.*
+- **Recency** (custom dbt check) — each **present** entity is current → *but maybe one is entirely absent.*
+- **Coverage** (custom dbt check) — each **expected** entity exists → *closing the loop back to "…and Glue DQ says those rows are valid."*
+
+In one line: **validity → liveness → per-entity timeliness → per-entity existence**.
 
 ## Design decisions & known limitations
 
