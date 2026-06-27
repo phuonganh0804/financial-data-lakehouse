@@ -8,5 +8,6 @@ select
     series_name,
     frequency,
     unit,
-    value
+    value,
+    "source" as data_source
 from source
