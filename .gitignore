@@ -32,3 +32,6 @@ terraform/assets/dependencies/
 .DS_Store
 Thumbs.db
 terraform/backend.hcl
+
+# Analysis exports: local snapshots, regenerate from analysis/sql/
+analysis/data/*.csv
