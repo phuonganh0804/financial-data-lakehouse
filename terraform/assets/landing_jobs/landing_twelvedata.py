@@ -158,7 +158,9 @@ def fetch_symbol(
         "symbol": symbol,
         "exchange": exchange,
         "interval": INTERVAL,
-        "adjust": "none",
+        # Split-adjusted, so splits don't show up as fake -75%..-95% returns.
+        # bronze_twelvedata.py stamps this as `price_adjustment` — keep in sync.
+        "adjust": "splits",
         "start_date": API_START_DATE,
         "end_date": API_END_DATE,
         "outputsize": MAX_OUTPUT_SIZE,
