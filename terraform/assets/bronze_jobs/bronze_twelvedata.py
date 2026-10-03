@@ -4,6 +4,7 @@ from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.context import SparkContext
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 # Glue Spark job — structures the raw Twelve Data responses from the immutable
 # landing zone into columnar Parquet in the bronze layer.
@@ -55,6 +56,7 @@ BRONZE_COLS = [
     "mic_code", "instrument_type",
     "source", "market", "interval",
     "api_start_date", "api_end_date", "ingest_date", "ingested_at",
+    "run_id", "source_file", "price_adjustment",
 ]
 
 
@@ -76,7 +78,8 @@ def read_landing():
         .filter(F.col("interval") == INTERVAL)
         .withColumn("bar", F.explode("values"))
         .select(
-            "symbol", "market", "exchange", "interval", "ingest_date",
+            "symbol", "market", "exchange", "interval", "ingest_date", "run_id",
+            F.input_file_name().alias("source_file"),
             F.col("bar.datetime").alias("datetime"),
             F.col("bar.open").alias("open"),
             F.col("bar.high").alias("high"),
@@ -95,11 +98,19 @@ def to_bronze(df):
     return (
         df
         .withColumn("source", F.lit("twelvedata"))
+        # Must match the `adjust` param landing_twelvedata.py requests.
+        .withColumn("price_adjustment", F.lit("splits"))
         .withColumn("api_start_date", F.lit(API_START_DATE))
         .withColumn("api_end_date", F.lit(API_END_DATE))
         .withColumn("ingest_date", F.lit(INGEST_DATE))
         .withColumn("ingested_at", F.current_timestamp())
-        .dropDuplicates(["symbol", "datetime"])
+        # Several landing runs can cover the same key (re-runs, backfills, FRED
+        # revisions). run_id starts with a UTC timestamp, so the newest run wins.
+        .withColumn("_rn", F.row_number().over(
+            Window.partitionBy("symbol", "datetime").orderBy(F.col("run_id").desc())
+        ))
+        .filter(F.col("_rn") == 1)
+        .drop("_rn")
         .select(*BRONZE_COLS)
     )
 
