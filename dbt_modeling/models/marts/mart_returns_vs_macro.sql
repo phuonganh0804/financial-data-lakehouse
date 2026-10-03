@@ -3,7 +3,15 @@
 -- quarterly GDP carry across every day until their next release, and daily
 -- rates carry across weekends to align with crypto returns.
 with returns as (
-    select symbol_key, date_day, daily_return, log_return, volatility_30d
+    select
+        symbol_key, date_day, daily_return, log_return, volatility_30d,
+        -- Calendar days this return covers: 1 for crypto, 3 over a weekend
+        -- for equities. Used to deflate by the inflation of that whole span.
+        date_diff(
+            'day',
+            lag(date_day) over (partition by symbol_key order by date_day),
+            date_day
+        ) as days_covered
     from {{ ref('fct_returns') }}
 ),
 
@@ -55,10 +63,11 @@ select
     m.cpi,
     m.real_gdp,
     m.cpi_yoy,
-    -- Approximate real daily return: nominal deflated by the daily-equivalent
-    -- of YoY inflation (365 calendar days). Approximate because inflation is
-    -- monthly — use cpi_yoy directly for rigorous period-level analysis.
-    (1 + r.daily_return) / power(1 + m.cpi_yoy, 1.0 / 365) - 1 as real_daily_return
+    -- Approximate real daily return: nominal deflated by YoY inflation for the
+    -- calendar days the return covers. Deflating per ROW (1/365) would remove
+    -- only ~252/365 of a year's inflation from equities. Approximate because
+    -- inflation is monthly — use cpi_yoy directly for period-level analysis.
+    (1 + r.daily_return) / power(1 + m.cpi_yoy, r.days_covered / 365.0) - 1 as real_daily_return
 from returns r
 inner join symbols s on r.symbol_key = s.symbol_key
 left join macro_rates m on r.date_day = m.date_day
