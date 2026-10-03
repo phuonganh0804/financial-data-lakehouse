@@ -7,6 +7,7 @@ from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.context import SparkContext
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 # Glue Spark job — structures the raw FRED responses from the immutable
 # landing zone into columnar Parquet in the bronze layer.
@@ -52,6 +53,7 @@ spark.conf.set("spark.sql.sources.partitionColumnTypeInference.enabled", "false"
 BRONZE_COLS = [
     "date", "value", "series_id", "series_name", "frequency", "unit",
     "source", "api_start_date", "api_end_date", "ingest_date", "ingested_at",
+    "run_id", "source_file",
 ]
 
 
@@ -98,6 +100,8 @@ def read_landing():
         .withColumn("obs", F.explode("observations"))
         .select(
             "series_id",
+            "run_id",
+            F.input_file_name().alias("source_file"),
             F.col("obs.date").alias("date"),
             F.col("obs.value").alias("value"),
         )
@@ -116,7 +120,13 @@ def to_bronze(df):
         .withColumn("api_end_date", F.lit(API_END_DATE))
         .withColumn("ingest_date", F.lit(INGEST_DATE))
         .withColumn("ingested_at", F.current_timestamp())
-        .dropDuplicates(["series_id", "date"])
+        # Several landing runs can cover the same key (re-runs, backfills, FRED
+        # revisions). run_id starts with a UTC timestamp, so the newest run wins.
+        .withColumn("_rn", F.row_number().over(
+            Window.partitionBy("series_id", "date").orderBy(F.col("run_id").desc())
+        ))
+        .filter(F.col("_rn") == 1)
+        .drop("_rn")
         .select(*BRONZE_COLS)
     )
 

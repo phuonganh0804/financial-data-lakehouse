@@ -4,6 +4,7 @@ from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.context import SparkContext
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 from pyspark.sql.types import ArrayType, StringType
 
 # Glue Spark job — structures the raw Binance klines pages from the immutable
@@ -65,6 +66,7 @@ BRONZE_COLS = [
     "taker_buy_base_volume", "taker_buy_quote_volume", "ignore",
     "source", "symbol", "interval",
     "api_start_date", "api_end_date", "ingest_date", "ingested_at",
+    "run_id", "source_file",
 ]
 
 
@@ -91,7 +93,10 @@ def read_landing():
         F.col("kline")[i].alias(name)
         for i, name in enumerate(KLINE_FIELDS)
     ]
-    return klines.select("symbol", "interval", "ingest_date", *cols)
+    return klines.select(
+        "symbol", "interval", "ingest_date", "run_id",
+        F.input_file_name().alias("source_file"), *cols,
+    )
 
 
 def to_bronze(df):
@@ -106,8 +111,13 @@ def to_bronze(df):
         # Re-stamp as a string literal so the partition column type is stable.
         .withColumn("ingest_date", F.lit(INGEST_DATE))
         .withColumn("ingested_at", F.current_timestamp())
-        # Multiple landing run_ids for one date collapse to one row per key.
-        .dropDuplicates(["symbol", "open_time"])
+        # Several landing runs can cover the same key (re-runs, backfills, FRED
+        # revisions). run_id starts with a UTC timestamp, so the newest run wins.
+        .withColumn("_rn", F.row_number().over(
+            Window.partitionBy("symbol", "open_time").orderBy(F.col("run_id").desc())
+        ))
+        .filter(F.col("_rn") == 1)
+        .drop("_rn")
         .select(*BRONZE_COLS)
     )
 
