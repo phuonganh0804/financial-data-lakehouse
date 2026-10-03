@@ -48,7 +48,8 @@ DROP_COLS = ["api_start_date", "api_end_date", "ingested_at"]
 
 def read_bronze():
     return (
-        spark.read.parquet(BRONZE_PATH)
+        # mergeSchema: older bronze batches predate the lineage columns.
+        spark.read.option("mergeSchema", "true").parquet(BRONZE_PATH)
         .filter(F.col("ingest_date") == INGEST_DATE)
     )
 
@@ -60,7 +61,10 @@ def transform(df):
         .drop(*DROP_COLS)
         # Deduplicate before merge — duplicate rows on the natural key cause MERGE to fail
         .dropDuplicates(["series_id", "date"])
+        # transformed_at = last write; first_loaded_at keeps the original
+        # load time across MERGE updates (see write_silver).
         .withColumn("transformed_at", F.current_timestamp())
+        .withColumn("first_loaded_at", F.current_timestamp())
     )
 
     return df
@@ -70,23 +74,45 @@ def table_exists() -> bool:
     return TABLE_NAME in [t.name for t in spark.catalog.listTables(CATALOG_DATABASE)]
 
 
+def add_missing_columns(df) -> None:
+    """Schema evolution: add columns the table doesn't have yet (e.g. lineage)."""
+    existing = set(spark.table(FULL_TABLE_NAME).columns)
+    for field in df.schema.fields:
+        if field.name not in existing:
+            print(f"Adding column {field.name} {field.dataType.simpleString()}")
+            spark.sql(
+                f"ALTER TABLE {FULL_TABLE_NAME} "
+                f"ADD COLUMNS (`{field.name}` {field.dataType.simpleString()})"
+            )
+
+
 def write_silver(df) -> None:
     if not table_exists():
         print(f"{FULL_TABLE_NAME} does not exist — creating")
         (
             df.writeTo(FULL_TABLE_NAME)
             .tableProperty("format-version", "2")
-            .partitionedBy("series_id", "date")
+            # Rows aren't pre-sorted by year; fanout keeps one open file per
+            # partition instead of failing. Persisted, so MERGE uses it too.
+            .tableProperty("write.spark.fanout.enabled", "true")
+            # Yearly partitions: daily data is tiny, so partitioning by date meant one
+            # file per row and multi-minute MERGEs. A year holds ~2k rows.
+            .partitionedBy(F.years("date"))
             .createOrReplace()
         )
     else:
         print(f"{FULL_TABLE_NAME} exists — merging")
+        add_missing_columns(df)
+        updates = ", ".join(
+            f"t.`{c}` = s.`{c}`" for c in df.columns if c != "first_loaded_at"
+        )
         df.createOrReplaceTempView("new_data")
         spark.sql(f"""
             MERGE INTO {FULL_TABLE_NAME} t
             USING new_data s
             ON t.series_id = s.series_id AND t.date = s.date
-            WHEN MATCHED THEN UPDATE SET *
+            WHEN MATCHED THEN UPDATE SET {updates},
+                t.first_loaded_at = coalesce(t.first_loaded_at, s.first_loaded_at)
             WHEN NOT MATCHED THEN INSERT *
         """)
 
