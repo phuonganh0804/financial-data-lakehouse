@@ -22,7 +22,10 @@ START="${1:?usage: backfill.sh <start YYYY-MM-DD> <end YYYY-MM-DD> [sources...]}
 END="${2:?usage: backfill.sh <start YYYY-MM-DD> <end YYYY-MM-DD> [sources...]}"
 shift 2
 if [ "$#" -gt 0 ]; then SOURCES=("$@"); else SOURCES=(fred binance twelvedata); fi
-INGEST_DATE="$START"            # batch label only; not the data's time axis
+# Batch label = the day the backfill ran (UTC), like Airflow's daily batches.
+# Not the data's time axis — that's each row's `date`. Sharing a label with a
+# daily run is harmless: bronze keeps the newest run per key, silver MERGEs.
+INGEST_DATE="$(date -u +%F)"
 
 # run_glue <job-name> <arguments-json> — starts a Glue job run and blocks until
 # it reaches a terminal state. Returns non-zero (and prints the error) on failure.
