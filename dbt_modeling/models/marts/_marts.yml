@@ -18,6 +18,9 @@ models:
           - accepted_values:
               arguments:
                 values: ['crypto', 'equity']
+      - name: is_benchmark
+        description: "True for index/ETF benchmarks (e.g. QQQ); exclude from asset-class averages."
+        tests: [not_null]
 
   - name: dim_series
     description: "FRED macro series reference (name, frequency, unit)."

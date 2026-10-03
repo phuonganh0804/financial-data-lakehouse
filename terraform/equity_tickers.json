@@ -5,6 +5,8 @@
   "as_of": "2024-01-01",
   "symbols": [
     "AAPL", "MSFT", "AMZN", "NVDA",
-    "TSLA", "GOOGL", "META", "ADBE"
-  ]
+    "TSLA", "GOOGL", "META", "ADBE",
+    "QQQ"
+  ],
+  "benchmarks": ["QQQ"]
 }

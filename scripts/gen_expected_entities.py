@@ -26,19 +26,23 @@ SOURCES = [
     ("equity", "equity_tickers.json", lambda c: c["symbols"]),
     ("fred", "macro_series.json", lambda c: [s["series_id"] for s in c["series"]]),
 ]
+# Optional per-config list of index/ETF symbols to compare against rather
+# than average in (flows to dim_symbol.is_benchmark).
+BENCHMARKS = lambda c: set(c.get("benchmarks", []))
 
 
 def main() -> None:
     rows = []
     for source, filename, extract in SOURCES:
         config = json.loads((TERRAFORM / filename).read_text())
+        benchmarks = BENCHMARKS(config)
         for entity_id in extract(config):
-            rows.append((source, entity_id))
+            rows.append((source, entity_id, str(entity_id in benchmarks).lower()))
 
     SEED.parent.mkdir(parents=True, exist_ok=True)
     with SEED.open("w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["source", "entity_id"])
+        writer.writerow(["source", "entity_id", "is_benchmark"])
         writer.writerows(rows)
 
     print(f"Wrote {len(rows)} expected entities -> {SEED.relative_to(ROOT)}")

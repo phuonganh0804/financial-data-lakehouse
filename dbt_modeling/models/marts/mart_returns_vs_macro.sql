@@ -8,7 +8,7 @@ with returns as (
 ),
 
 symbols as (
-    select symbol_key, symbol, exchange, asset_class
+    select symbol_key, symbol, exchange, asset_class, is_benchmark
     from {{ ref('dim_symbol') }}
 ),
 
@@ -45,6 +45,7 @@ select
     s.asset_class,
     s.exchange,
     s.symbol,
+    s.is_benchmark,
     r.daily_return,
     r.log_return,
     r.volatility_30d,
