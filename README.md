@@ -5,11 +5,29 @@
 A medallion-architecture data lakehouse for financial market data on AWS. Crypto
 (Binance), equities (Twelve Data), and macro (FRED) flow through
 `landing → bronze → silver → data quality → dbt gold`, orchestrated by Airflow and
-provisioned with Terraform.
+provisioned with Terraform. On top of it, a SQL [analysis](analysis/FINDINGS.md)
+of how big tech, crypto and the Nasdaq-100 performed through the 2021–2026 rate
+cycle.
 
 ## Purpose
 
 Financial analysts and quantitative researchers often spend significant effort collecting and reconciling market and macroeconomic data. This platform automates ingestion, validation, and transformation into analytics-ready datasets for risk analysis and quantitative research.
+
+## Key findings
+
+From [the analysis](analysis/FINDINGS.md) of 8 US tech megacaps, the Nasdaq-100
+ETF (QQQ) and BTC/ETH, 2021-01 → 2026-09:
+
+| Topic | Finding |
+|---|---|
+| Risk-adjusted | **The index beat most of its stars on risk-adjusted terms.** Only NVDA and GOOGL had a better Sharpe ratio than simply holding QQQ (0.58), and QQQ had the lowest volatility of any asset. |
+| Concentration | **The "average tech stock" is a story about NVDA.** The 8 stocks averaged +305%, but the median one returned +141%, about the same as QQQ's +136%. |
+| Rate cycle | **Crypto was the most rate-sensitive asset:** +164% at zero rates, −33% while the Fed hiked to 5.33%. For QQQ, hiking mainly raised risk: volatility went from 16% to 28%. |
+| Inflation | **Inflation turned a 15% loss into a 25% one.** In 2021–22 QQQ fell 15% in nominal terms, but CPI rose 14%, so investors lost a quarter of their purchasing power. |
+
+Every number comes from a query in [`analysis/sql/`](analysis/sql/), with
+caveats (survivorship bias, one rate cycle) and a plain-language glossary in
+[FINDINGS.md](analysis/FINDINGS.md).
 
 ## Architecture
 
