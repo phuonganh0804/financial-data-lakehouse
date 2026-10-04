@@ -2,16 +2,15 @@
 
 [![ci](https://github.com/phuonganh0804/financial-data-lakehouse/actions/workflows/ci.yml/badge.svg)](https://github.com/phuonganh0804/financial-data-lakehouse/actions/workflows/ci.yml)
 
-A medallion-architecture data lakehouse for financial market data on AWS. Crypto
-(Binance), equities (Twelve Data), and macro (FRED) flow through
-`landing → bronze → silver → data quality → dbt gold`, orchestrated by Airflow and
-provisioned with Terraform. On top of it, a SQL [analysis](analysis/FINDINGS.md)
-of how big tech, crypto and the Nasdaq-100 performed through the 2021–2026 rate
-cycle.
+An end-to-end **data lakehouse on AWS** for financial market data, and a **SQL
+analysis** built on it. Daily crypto (Binance), equity (Twelve Data) and US macro
+(FRED) data flow through `landing → bronze → silver → data quality → dbt gold`,
+orchestrated by Airflow and provisioned with Terraform. The
+[analysis](analysis/FINDINGS.md) asks how big tech, crypto and the Nasdaq-100
+performed through the 2021–2026 interest-rate cycle.
 
-## Purpose
-
-Financial analysts and quantitative researchers often spend significant effort collecting and reconciling market and macroeconomic data. This platform automates ingestion, validation, and transformation into analytics-ready datasets for risk analysis and quantitative research.
+**Stack:** Python · PySpark · SQL · dbt · Apache Airflow · AWS (S3, Glue, Athena,
+IAM, SSM) · Apache Iceberg · Terraform · Docker · GitHub Actions
 
 ## Key findings
 
@@ -28,6 +27,26 @@ ETF (QQQ) and BTC/ETH, 2021-01 → 2026-09:
 Every number comes from a query in [`analysis/sql/`](analysis/sql/), with
 caveats (survivorship bias, one rate cycle) and a plain-language glossary in
 [FINDINGS.md](analysis/FINDINGS.md).
+
+## Highlights
+
+- **Trustworthy data.** Four layers of quality checks form a closed loop
+  (validity → freshness → per-asset recency → coverage), plus 40 dbt tests. Bad
+  data never reaches the reporting layer.
+  → [Data quality & lineage](docs/data-quality-and-lineage.md)
+- **Every number is traceable.** Row-level lineage (`run_id`, `source_file`) links
+  each value to the exact raw API response, and Iceberg snapshots show past states.
+  → [Lineage & auditability](docs/data-quality-and-lineage.md#lineage--auditability)
+- **Right-sized storage.** Re-partitioning the Iceberg tables cut 27k one-row files
+  to 28, and a load that timed out at 10 minutes now takes about 2.
+  → [Design decisions](docs/design-decisions.md)
+- **Correctness bugs caught and fixed:** unadjusted stock splits (fake −90% days),
+  and a real-return formula that under-deflated equities by about 30%.
+  → [Design decisions](docs/design-decisions.md) ·
+  [the analysis](analysis/FINDINGS.md#data-issue-found-during-this-analysis)
+- **History and daily runs converge.** Bulk backfills and daily Airflow runs upsert
+  into the same tables without duplicates.
+  → [History vs. incremental](docs/setup.md#history-vs-incremental)
 
 ## Architecture
 
@@ -105,167 +124,22 @@ order by asset_class;
 | crypto | 730 | 0.025 | 0.0177 | 3.0 | 4.21 | 2.69 |
 | equity | 2000 | 0.0859 | 0.0753 | 2.29 | 4.21 | 2.69 |
 
+## Documentation
 
-## Setup
-
-### Prerequisites
-- AWS credentials with permission to create Glue, S3, Athena, Glue Data Catalog, IAM, and SSM resources.
-- Terraform, Docker (for Airflow + dbt), AWS CLI.
-- Config files are gitignored (account/run-specific) - copy each from its committed `.example`: `terraform/backend.hcl` (S3 state backend), `terraform/terraform.tfvars` (run dates + interval), and `airflow/.env` (Terraform outputs).
-
-Store the FRED API key in SSM (read at runtime by the landing job - never committed):
-```bash
-aws ssm put-parameter \
-  --name /financial-data-lakehouse/fred-api-key \
-  --type SecureString \
-  --value "<your-fred-api-key>" \
-  --region eu-central-1
-```
-
-### 1. Deploy infrastructure
-```bash
-cd terraform
-cp backend.hcl.example backend.hcl            # Terraform state S3 bucket
-cp terraform.tfvars.example terraform.tfvars  # run dates + interval
-terraform init -backend-config=backend.hcl
-terraform apply
-```
-Creates the Glue jobs, S3 buckets, Iceberg catalog, DQ rulesets, and Athena
-workgroup, and uploads the job scripts. **All job IAM roles and policies are
-provisioned here - no manual IAM setup.**
-
-### 2. Backfill history (optional, one-off)
-Airflow runs with `catchup=False`, so it only ingests **forward from now**. To load
-history - a fresh deploy, or a newly added series/symbol - run the bulk backfill
-(landing → bronze → transform per source over a wide date range, **outside**
-Airflow):
-```bash
-chmod +x scripts/backfill.sh
-./scripts/backfill.sh 2020-01-01 2026-10-02          # all sources
-./scripts/backfill.sh 2020-01-01 2026-10-02 fred     # one source
-```
-2020 is a warm-up year: `cpi_yoy` needs the CPI print from 12 months earlier,
-so the mart is complete from 2021, which still covers a full rate cycle (zero
-rates → 2022–23 hikes → 2024–25 cuts).
-This is far cheaper and faster than an Airflow catch-up: **one wide-range Glue job
-per stage** instead of ~one DAG run per day (which would be hundreds of job
-invocations paying Spark startup over and over). Skip it if you only need data
-going forward.
-
-### 3. Start orchestration
-```bash
-cd airflow
-cp .env.example .env        # fill in Terraform outputs: bucket names, role ARN, keys
-docker compose up -d
-# open http://localhost:8080 and unpause the `financial_data_lakehouse` DAG
-```
-The containers authenticate to AWS via your host's `~/.aws` credentials
-(bind-mounted in). From here the DAG runs daily, ingesting each new session forward.
-
-## History vs. incremental
-
-Two distinct mechanisms keep the lakehouse current, and they never conflict,
-because silver `MERGE`s on natural keys (both paths converge to one row per
-entity/date):
-
-- **Incremental (ongoing)** - the Airflow DAG, daily. Each run fetches a single
-  `ds` (crypto/equities) or a cadence-sized **lookback window** (FRED, so the
-  latest late-released observation is always captured). This is the steady state.
-- **Backfill (history)** - `scripts/backfill.sh`, on demand. Fetches a wide
-  `[api_start_date, api_end_date]` range in one shot. The whole range lands under
-  one `ingest_date` batch, labelled with the day the backfill ran; the real time
-  axis is each row's `date` column.
-
-Landing and bronze are organised by **when data was fetched** (`ingest_date`,
-`run_id`); silver and gold by **what date it describes**. Gold models are full
-rebuilds (`materialized: table`), so rolling metrics (30-day volatility, `lag()`
-returns, macro forward-fill) and FRED revisions stay correct across the seam
-between backfilled and daily rows. Days the DAG misses (laptop off, failed run)
-are not caught up automatically - the dbt recency/coverage tests flag them, and
-a short `backfill.sh` over the gap fills them; overlaps are harmless.
-
-Trading-calendar gates (NASDAQ for equities, SIFMA for FRED) skip weekends and
-market holidays automatically, so the strict landing jobs only run when there is
-data to fetch.
-
-## Quality & testing
-
-Quality is enforced at three levels - pre-merge, runtime, and analytics:
-
-1. **CI - static checks on every push/PR** (`.github/workflows/ci.yml`, credential-free, no AWS needed):
-   - `ruff` (real-error rules) + `py_compile` across all Glue/Airflow Python;
-   - **seed-drift** - regenerates the dbt coverage seed from the Terraform configs and fails if it diverges from what's committed;
-   - `terraform fmt -check` + `validate` (`-backend=false`);
-   - `dbt parse` against the committed profile - builds the manifest and catches model/macro/schema errors offline.
-2. **Glue Data Quality - runtime row rules that gate the gold build.** Each silver table has a DQDL ruleset (`binance_dq_ruleset`, `twelvedata_dq_ruleset`, `fred_dq_ruleset`) asserting `RowCount > 0`, completeness (`IsComplete` on keys/OHLCV), and validity (`ColumnValues "close" > 0`, `volume >= 0`). The DAG runs these after silver and **only triggers `dbt build` if every source's checks pass** - bad data never reaches gold.
-3. **dbt - the analytics layer.** A schema contract (`not_null`/`unique` on surrogate keys, `relationships` foreign-key integrity from every fact to its dimensions, `accepted_values` on `asset_class`) **plus source freshness and custom recency & coverage assertions** - all run in `dbt build`.
-
-**Why four data-quality checks?** They aren't a list - they're a **closed loop**, where each one covers the blind spot of the one before it:
-
-- **Validity** (Glue DQ) - the rows present are correct → *but maybe nothing fresh landed.*
-- **Freshness** (dbt source freshness) - something landed recently → *but maybe one entity silently stalled.*
-- **Recency** (custom dbt check) - each **present** entity is current → *but maybe one is entirely absent.*
-- **Coverage** (custom dbt check) - each **expected** entity exists → *closing the loop back to "…and Glue DQ says those rows are valid."*
-
-In one line: **validity → liveness → per-entity timeliness → per-entity existence**.
-
-## Lineage & auditability
-
-Every silver row can be traced back to the exact raw API response it came from:
-
-| Column | Answers |
+| Doc | What's in it |
 |---|---|
-| `source` | Which provider? |
-| `ingest_date` | Which batch? |
-| `run_id` | Which fetch? (UTC timestamp + random suffix) |
-| `source_file` | Which raw file in landing? |
-| `first_loaded_at` | When did the row first appear? Kept across `MERGE` updates |
-| `transformed_at` | When was it last written? |
-| `price_adjustment` | How were equity prices adjusted? (`splits`) |
+| [Analysis findings](analysis/FINDINGS.md) | The 5 questions, results, caveats and a glossary of finance terms |
+| [Data quality & lineage](docs/data-quality-and-lineage.md) | CI checks, Glue Data Quality, dbt tests, the 4-layer quality loop, lineage columns, auditability |
+| [Design decisions](docs/design-decisions.md) | Split adjustment, partitioning, newest-run-wins, known limitations |
+| [Setup & operations](docs/setup.md) | Deploy, backfill, run Airflow, how daily runs and backfills fit together |
+| [dbt project](dbt_modeling/README.md) | The gold-layer models |
 
-```sql
-select symbol, date, close, run_id, source_file
-from financial_data_lakehouse_silver.equity_prices
-where symbol = 'NVDA' and date = date '2024-06-10';
--- source_file = s3://…-landing-…/equity_prices/…/symbol=NVDA/ingest_date=…/run_id=…/response.json
+## Quick start
+
+```bash
+(cd terraform && terraform init -backend-config=backend.hcl && terraform apply)
+bash scripts/backfill.sh 2020-01-01 <yesterday>   # optional: load history
+(cd airflow && docker compose up -d)              # then unpause the DAG at :8080
 ```
 
-Three layers make values auditable: the **immutable, versioned landing zone**
-(raw payloads, never overwritten), these **row-level lineage columns**, and
-**Iceberg snapshots**, which let you query a silver table as it was at an earlier
-point (`FOR TIMESTAMP AS OF …`, `"<table>$history"`). Snapshot expiry (`VACUUM`)
-shortens that history, so its retention is a deliberate audit-vs-cost choice.
-
-## Design decisions & known limitations
-
-- **Equity prices are split-adjusted** (`adjust=splits` on Twelve Data). With raw
-  prices, a 10-for-1 split shows up as a −90% "return" (NVDA 2024-06-10, AMZN and
-  GOOGL 2022, AAPL and TSLA 2020) and distorts volatility and every average built
-  on it. *Limitation:* daily runs fetch one day, so a future split leaves older rows
-  on the old scale. Re-run the Twelve Data backfill after a split; a query for
-  `|daily_return| > 30%` catches it.
-- **Silver is partitioned by year, not by `(date, symbol)`.** Daily data is tiny,
-  so per-day partitions meant one file per row: 27,472 files for 13.5k equity rows,
-  and a `MERGE` that hit the 10-minute Glue timeout. Yearly partitions hold ~2k rows
-  each (28 files in total), the same write takes ~1.5 minutes, and a daily `MERGE`
-  touches only the current year. Rows arrive unsorted after the dedup shuffle, so
-  the tables use Iceberg's fanout writer (`write.spark.fanout.enabled`).
-- **Newest landing run wins.** Re-runs and backfills can put several runs under one
-  `ingest_date`. Bronze keeps the row from the latest `run_id` per key (it starts with
-  a UTC timestamp, so it sorts by time) instead of an arbitrary one, so a corrected
-  re-fetch always replaces the earlier version.
-- **Small files still build up from daily runs.** Each daily `MERGE` adds a few small
-  files to the current-year partition. Compact them periodically in Athena:
-  `OPTIMIZE <table> REWRITE DATA USING BIN_PACK` and `VACUUM <table>`.
-- **Two IAM grants are broader than they need to be:** `kms:Decrypt` on `*`, and
-  `glue:*DataQuality*`. The next step is to scope KMS to the SSM key's ARN and list
-  the Data Quality actions explicitly.
-- **Twelve Data landing is intentionally not paginated.** The `time_series`
-  endpoint caps each response at `outputsize` (max **5000 rows**, not a time span).
-  The 2020→2026 backfill is ~1,700 daily bars per symbol, well under the cap, so a
-  single request is complete. Pagination is deliberately skipped: it would be
-  untestable against the free tier's limited history depth, and `landing_binance.py`
-  (a hard 1000-rows/request cap) already demonstrates the paging pattern. To go
-  deeper later, either add date-windowed pagination (fetch newest-first, advance
-  `end_date` until a page returns `< outputsize`) or switch to a coarser interval
-  (monthly ≈ 416 years per 5000 points) if low-frequency grain is acceptable.
+Prerequisites, API keys and config files: see [Setup & operations](docs/setup.md).
